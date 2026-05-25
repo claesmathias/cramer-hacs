@@ -4,17 +4,13 @@ CONF_ORGANIZATION_ID = "organization_id"
 
 FLEET_API_URL = "https://cramerfleetapi.globetools.systems"
 FLEET_AUTH_URL = "https://cramerfleetauth.globetools.systems"
-GUC_URL = "https://guc.globetools.systems:446"
-
-GUC_CLIENT_ID = "CramerConnect"
-GUC_CLIENT_SECRET = "351fc703-85f8-4fda-815a-6c2b1699b05a"
-GUC_SCOPE = (
-    "GlobeIotDashboardApi GimsSignalR IotDDSApi DeviceDbApi LicenseServiceApi "
-    "PnmsCacheApi GfuApi openid offline_access profile GIotProductServiceApi "
-    "GucApi ErrorServiceApi"
-)
 
 SCAN_INTERVAL_SECONDS = 30
+
+# Required by the server — extracted from the Android app
+APP_APPLICATION_KEY = "e4bc1f9c-6f1d-4349-b070-917a06dd05d8"
+APP_BRAND = "Cramer"
+APP_NAME = "Cramer Connect"
 
 PRODUCT_CODE_RLM1 = "RLM1"
 PRODUCT_CODE_RLM2 = "RLM2"

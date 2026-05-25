@@ -9,12 +9,11 @@ from typing import Any
 import aiohttp
 
 from .const import (
+    APP_APPLICATION_KEY,
+    APP_BRAND,
+    APP_NAME,
     FLEET_API_URL,
     FLEET_AUTH_URL,
-    GUC_CLIENT_ID,
-    GUC_CLIENT_SECRET,
-    GUC_SCOPE,
-    GUC_URL,
     MOWER_STATE_MAP,
     ROBOTIC_MOWER_PRODUCT_CODES,
 )
@@ -51,7 +50,6 @@ class CramerAuth:
     guc_refresh_token: str
     organization_id: str
     guc_expires_in: int
-    fleet_expiration: str | None
     fetched_at: datetime = field(default_factory=datetime.now)
 
 
@@ -63,16 +61,27 @@ class CramerConnectAuthError(CramerConnectApiError):
     pass
 
 
+def _base_headers() -> dict[str, str]:
+    """Headers the app sends on every request."""
+    return {
+        "ApplicationKey": APP_APPLICATION_KEY,
+        "Brand": APP_BRAND,
+        "App-Name": APP_NAME,
+        "Language": "en",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
 class CramerConnectClient:
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
 
     async def authenticate(self, username: str, password: str) -> CramerAuth:
-        fleet_token, organization_id, fleet_expiration = await self._fleet_login(
-            username, password
-        )
-        guc_token, guc_refresh_token, guc_expires_in = await self._guc_login(
-            username, password
+        """Full login flow: fleet login → get GUC token via fleet API."""
+        fleet_token, organization_id = await self._fleet_login(username, password)
+        guc_token, guc_refresh_token, guc_expires_in = await self._get_guc_token(
+            fleet_token, organization_id
         )
         return CramerAuth(
             fleet_token=fleet_token,
@@ -80,35 +89,17 @@ class CramerConnectClient:
             guc_refresh_token=guc_refresh_token,
             organization_id=organization_id,
             guc_expires_in=guc_expires_in,
-            fleet_expiration=fleet_expiration,
         )
 
-    async def refresh_guc_token(self, refresh_token: str) -> tuple[str, str, int]:
-        """Refresh GUC token. Returns (access_token, refresh_token, expires_in)."""
-        url = "https://xapi.globetools.systems/v2/user/token/refresh"
-        payload = {"refresh_token": refresh_token}
-        async with self._session.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-        ) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                _LOGGER.warning("GUC token refresh failed (%s): %s", resp.status, text)
-                raise CramerConnectAuthError(f"Token refresh failed: {resp.status}")
-            data = await resp.json()
-            return (
-                data["access_token"],
-                data.get("refresh_token", refresh_token),
-                int(data.get("expires_in", 3600)),
-            )
+    async def refresh_guc_token(
+        self, fleet_token: str, organization_id: str
+    ) -> tuple[str, str, int]:
+        """Re-fetch a GUC token using the fleet token."""
+        return await self._get_guc_token(fleet_token, organization_id)
 
     async def get_devices(self, auth: CramerAuth) -> list[CramerDevice]:
         url = f"{FLEET_API_URL}/api/devices/{auth.organization_id}/subscribed"
-        headers = {
-            "Authorization": f"Bearer {auth.fleet_token}",
-            "Content-Type": "application/json",
-        }
+        headers = {**_base_headers(), "Authorization": f"Bearer {auth.fleet_token}"}
         async with self._session.get(url, headers=headers) as resp:
             if resp.status == 401:
                 raise CramerConnectAuthError("Fleet token expired or invalid")
@@ -146,10 +137,7 @@ class CramerConnectClient:
             f"{FLEET_API_URL}/api/devices/{auth.organization_id}"
             f"/status/{product_id}/{device_id}"
         )
-        headers = {
-            "Authorization": f"Bearer {auth.fleet_token}",
-            "Content-Type": "application/json",
-        }
+        headers = {**_base_headers(), "Authorization": f"Bearer {auth.fleet_token}"}
         async with self._session.get(url, headers=headers) as resp:
             if resp.status == 401:
                 raise CramerConnectAuthError("Fleet token expired or invalid")
@@ -160,18 +148,19 @@ class CramerConnectClient:
                 )
             return await resp.json()
 
-    async def _fleet_login(
-        self, username: str, password: str
-    ) -> tuple[str, str, str | None]:
-        """Returns (access_token, organization_id, expiration)."""
+    async def _fleet_login(self, username: str, password: str) -> tuple[str, str]:
+        """Returns (fleet_access_token, organization_id).
+
+        The app first calls /api/Authorization/user-exist to decide which login
+        path to use. For Cramer Connect users the fleet path is always taken, so
+        we go directly to /api/Authenticate.
+        """
         url = f"{FLEET_API_URL}/api/Authenticate"
         payload = {"username": username, "password": password}
-        async with self._session.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-        ) as resp:
-            if resp.status in (401, 403):
+        async with self._session.post(url, json=payload, headers=_base_headers()) as resp:
+            if resp.status in (400, 401, 403):
+                text = await resp.text()
+                _LOGGER.debug("Fleet login %s: %s", resp.status, text)
                 raise CramerConnectAuthError("Invalid credentials")
             if resp.status != 200:
                 text = await resp.text()
@@ -184,47 +173,34 @@ class CramerConnectClient:
         if not token:
             raise CramerConnectAuthError("No access_token in fleet login response")
 
-        org_id = data.get("organization_id", "")
-        expiration = data.get("expiration")
-        return token, org_id, expiration
+        # Prefer owner_organization_id when present (sub-org members)
+        org_id = data.get("owner_organization_id") or data.get("organization_id", "")
+        return token, org_id
 
-    async def _guc_login(
-        self, username: str, password: str
+    async def _get_guc_token(
+        self, fleet_token: str, organization_id: str
     ) -> tuple[str, str, int]:
-        """Returns (access_token, refresh_token, expires_in)."""
-        url = f"{GUC_URL}/connect/token"
-        payload = {
-            "scope": GUC_SCOPE,
-            "grant_type": "password",
-            "client_id": GUC_CLIENT_ID,
-            "client_secret": GUC_CLIENT_SECRET,
-            "username": username,
-            "password": password,
-            "HasLocationInfo": "false",
-            "Latitude": "0",
-            "Longitude": "0",
-            "LoginTime": str(int(datetime.now().timestamp())),
-        }
-        async with self._session.post(
-            url,
-            data=payload,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        ) as resp:
-            if resp.status in (400, 401, 403):
-                text = await resp.text()
-                raise CramerConnectAuthError(
-                    f"GUC login failed ({resp.status}): {text}"
-                )
+        """Exchange the fleet token for a GUC token via the fleet API.
+
+        Returns (access_token, refresh_token, expires_in_seconds).
+        """
+        url = f"{FLEET_API_URL}/api/account/GucToken"
+        payload = {"organizationId": organization_id}
+        headers = {**_base_headers(), "Authorization": f"Bearer {fleet_token}"}
+        async with self._session.post(url, json=payload, headers=headers) as resp:
+            if resp.status == 401:
+                raise CramerConnectAuthError("Fleet token rejected by GucToken endpoint")
             if resp.status != 200:
                 text = await resp.text()
                 raise CramerConnectApiError(
-                    f"GUC login failed ({resp.status}): {text}"
+                    f"GucToken request failed ({resp.status}): {text}"
                 )
             data = await resp.json()
 
-        token = data.get("access_token")
-        refresh = data.get("refresh_token", "")
-        expires_in = int(data.get("expires_in", 3600))
+        token = data.get("accessToken")
         if not token:
-            raise CramerConnectAuthError("No access_token in GUC login response")
+            raise CramerConnectAuthError("No accessToken in GucToken response")
+
+        refresh = data.get("refreshToken", "")
+        expires_in = int(data.get("expireIn", 3600))
         return token, refresh, expires_in

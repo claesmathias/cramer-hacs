@@ -60,7 +60,7 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         _LOGGER.debug("GUC token expiring, refreshing")
         try:
             token, refresh, expires_in = await self._client.refresh_guc_token(
-                self._auth.guc_refresh_token
+                self._auth.fleet_token, self._auth.organization_id
             )
             self._auth.guc_token = token
             self._auth.guc_refresh_token = refresh
