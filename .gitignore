@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# HA dev environment
+.devcontainer/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
