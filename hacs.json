@@ -2,6 +2,5 @@
   "name": "Cramer Connect",
   "content_in_root": false,
   "homeassistant": "2024.1.0",
-  "filename": "cramer_connect.zip",
   "render_readme": true
 }
