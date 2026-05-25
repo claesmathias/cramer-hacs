@@ -13,7 +13,6 @@ from .const import (
     APP_BRAND,
     APP_NAME,
     FLEET_API_URL,
-    FLEET_AUTH_URL,
     MOWER_STATE_MAP,
     ROBOTIC_MOWER_PRODUCT_CODES,
 )

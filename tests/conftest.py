@@ -1,0 +1,113 @@
+"""Inject homeassistant stubs before any test module is imported."""
+import sys
+import types
+from enum import Enum
+from pathlib import Path
+from unittest.mock import MagicMock
+
+ROOT = Path(__file__).parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+def _module(name: str) -> types.ModuleType:
+    m = types.ModuleType(name)
+    sys.modules[name] = m
+    return m
+
+
+# ---- homeassistant.const ---------------------------------------------------
+_const = _module("homeassistant.const")
+_const.CONF_USERNAME = "username"
+_const.CONF_PASSWORD = "password"
+
+
+class _Platform(str, Enum):
+    SENSOR = "sensor"
+
+
+_const.Platform = _Platform
+
+# ---- homeassistant.exceptions ----------------------------------------------
+_exc = _module("homeassistant.exceptions")
+
+
+class _ConfigEntryAuthFailed(Exception):
+    pass
+
+
+class _ConfigEntryNotReady(Exception):
+    pass
+
+
+_exc.ConfigEntryAuthFailed = _ConfigEntryAuthFailed
+_exc.ConfigEntryNotReady = _ConfigEntryNotReady
+
+# ---- homeassistant.config_entries ------------------------------------------
+_ce = _module("homeassistant.config_entries")
+_ce.ConfigEntry = type("ConfigEntry", (), {})
+_ce.ConfigFlow = type("ConfigFlow", (), {"async_set_unique_id": MagicMock(), "_abort_if_unique_id_configured": MagicMock()})
+
+# ---- homeassistant.core ----------------------------------------------------
+_core = _module("homeassistant.core")
+_core.HomeAssistant = type("HomeAssistant", (), {})
+
+# ---- homeassistant.helpers -------------------------------------------------
+_helpers = _module("homeassistant.helpers")
+
+_aio = _module("homeassistant.helpers.aiohttp_client")
+_aio.async_get_clientsession = MagicMock()
+
+_coord = _module("homeassistant.helpers.update_coordinator")
+_coord.DataUpdateCoordinator = type(
+    "DataUpdateCoordinator",
+    (),
+    {
+        "__init_subclass__": classmethod(lambda cls, **kw: None),
+        "__class_getitem__": classmethod(lambda cls, item: cls),
+    },
+)
+_coord.UpdateFailed = type("UpdateFailed", (Exception,), {})
+
+_ep = _module("homeassistant.helpers.entity_platform")
+_ep.AddEntitiesCallback = None
+
+_dr = _module("homeassistant.helpers.device_registry")
+_dr.DeviceInfo = dict  # DeviceInfo is TypedDict-like; dict is close enough for tests
+
+_ent = _module("homeassistant.helpers.entity")
+_ent.DeviceInfo = dict
+
+_ucoord = _module("homeassistant.helpers.update_coordinator")
+_ucoord.CoordinatorEntity = type("CoordinatorEntity", (), {
+    "__init__": lambda self, coordinator: None,
+    "coordinator": property(lambda self: None),
+})
+_ucoord.DataUpdateCoordinator = type("DataUpdateCoordinator", (), {
+    "__init_subclass__": classmethod(lambda cls, **kw: None),
+    "__class_getitem__": classmethod(lambda cls, item: cls),
+})
+_ucoord.UpdateFailed = type("UpdateFailed", (Exception,), {})
+
+# ---- homeassistant.components.sensor ---------------------------------------
+_sensor_mod = _module("homeassistant.components.sensor")
+_sensor_mod.SensorEntity = type("SensorEntity", (), {})
+_sensor_mod.SensorDeviceClass = type("SensorDeviceClass", (), {"BATTERY": "battery"})
+_sensor_mod.SensorStateClass = type("SensorStateClass", (), {"MEASUREMENT": "measurement"})
+_sensor_mod.SensorEntityDescription = type(
+    "SensorEntityDescription",
+    (),
+    {"__init__": lambda self, **kw: self.__dict__.update(kw)},
+)
+
+# ---- homeassistant.data_entry_flow -----------------------------------------
+_flow = _module("homeassistant.data_entry_flow")
+_flow.FlowResult = dict
+
+# ---- voluptuous (used in config_flow) --------------------------------------
+try:
+    import voluptuous  # noqa: F401
+except ImportError:
+    _vol = _module("voluptuous")
+    _vol.Schema = lambda x: x
+    _vol.Required = lambda k: k
