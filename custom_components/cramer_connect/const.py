@@ -4,6 +4,18 @@ CONF_ORGANIZATION_ID = "organization_id"
 
 FLEET_API_URL = "https://cramerfleetapi.globetools.systems"
 FLEET_AUTH_URL = "https://cramerfleetauth.globetools.systems"
+XLINK_URL = "https://xapi.globetools.systems"
+GUC_URL = "https://guc.globetools.systems:446"
+
+# GUC OAuth2 credentials — extracted from the Android app
+GUC_CLIENT_ID = "CramerConnect"
+GUC_CLIENT_SECRET = "351fc703-85f8-4fda-815a-6c2b1699b05a"
+GUC_SCOPE = (
+    "GlobeIotDashboardApi GimsSignalR IotDDSApi DeviceDbApi LicenseServiceApi "
+    "PnmsCacheApi GfuApi openid offline_access profile GIotProductServiceApi "
+    "GucApi ErrorServiceApi"
+)
+XLINK_CORP_ID = "100fa2b00b622800"
 
 SCAN_INTERVAL_SECONDS = 30
 
