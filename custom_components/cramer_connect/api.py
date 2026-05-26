@@ -345,7 +345,13 @@ class CramerConnectClient:
     async def _get_xlink_device_state(
         self, auth: CramerAuth, device: CramerDevice
     ) -> tuple[str | None, int | None]:
-        """Fetch state (datapoint 2) and battery (datapoint 3) for one device."""
+        """Fetch state and battery from datapoint 32 of the device-state endpoint.
+
+        Datapoint 32 value is a JSON string whose 'request' object contains
+        mower_main_state (int) and battery_status (int).
+        """
+        import json as _json
+
         product_id = device.product_id or device.raw.get("product_id", "")
         device_id = device.device_id
         url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
@@ -361,23 +367,30 @@ class CramerConnectClient:
             data = await resp.json()
 
         datapoints = data.get("datapoints") or {}
-        state: str | None = None
+        dp32 = datapoints.get("32")
+        if not dp32:
+            return None, None
+
+        raw_val = dp32.get("value") if isinstance(dp32, dict) else None
+        if not isinstance(raw_val, str):
+            return None, None
+
+        try:
+            parsed = _json.loads(raw_val)
+        except _json.JSONDecodeError:
+            return None, None
+
+        request = parsed.get("request") or {}
+        raw_state = request.get("mower_main_state")
+        raw_battery = request.get("battery_status")
+
+        state = str(raw_state) if raw_state is not None else None
         battery: int | None = None
-
-        dp2 = datapoints.get("2")
-        if dp2:
-            raw_val = dp2.get("value") if isinstance(dp2, dict) else None
-            if raw_val is not None:
-                state = str(raw_val)
-
-        dp3 = datapoints.get("3")
-        if dp3:
-            raw_val = dp3.get("value") if isinstance(dp3, dict) else None
-            if raw_val is not None:
-                try:
-                    battery = int(raw_val)
-                except (ValueError, TypeError):
-                    pass
+        if raw_battery is not None:
+            try:
+                battery = int(raw_battery)
+            except (ValueError, TypeError):
+                pass
 
         return state, battery
 
