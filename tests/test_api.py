@@ -59,6 +59,8 @@ DP32_VALUE = _json.dumps({
         "battery_status": 78,
         "next_start": 1800000000,
         "source_for_next_start": 2,
+        "latitude": 52.0,
+        "longitude": 5.0,
     },
     "response": {"return_code": 0},
 })
@@ -70,6 +72,7 @@ DP48_VALUE = _json.dumps({
         "cutting_time": 3600,
         "running_time": 7200,
         "no_of_fatal_error": 5,
+        "cutting_distance": 12500,
     },
 })
 
@@ -85,7 +88,7 @@ DEVICE_LIST_OK = [
         "id": 12345,
         "product_id": "prod-001",
         "name": "My Mower",
-        "sn": "SN001",
+        "sn": "SN-FLEET-001",
         "mac": "AA:BB:CC:DD:EE:FF",
         "productCode": "RLM1",
         "state": 4,
@@ -97,11 +100,11 @@ DEVICE_LIST_OK = [
 # xlink subscribe/devices returns no productCode, state, or battery
 XLINK_DEVICE_LIST_OK = [
     {
-        "id": 825765938,
-        "product_id": "160fa8b69e2503e9160fa8b69e250601",
-        "name": "Nacho",
-        "sn": "215101235",
-        "mac": "323135313031323335",
+        "id": 100000001,
+        "product_id": "aabbccddeeff00112233445566778899",
+        "name": "Test Mower",
+        "sn": "SN-XLINK-001",
+        "mac": "aabbccddeeff",
         "is_online": True,
     }
 ]
@@ -412,6 +415,9 @@ class TestGetDevices:
         assert d.cutting_time_s == 3600
         assert d.running_time_s == 7200
         assert d.error_count == 5
+        assert d.distance_m == 12500
+        assert d.latitude == 52.0
+        assert d.longitude == 5.0
         assert d.is_mower is True   # state is not None, no productCode → is_mower
 
     async def test_xlink_no_schedule_next_start_is_none(self):
@@ -447,6 +453,39 @@ class TestGetDevices:
         assert len(devices) == 1
         assert devices[0].state is None
         assert devices[0].battery is None
+
+    async def test_xlink_distance_none_when_field_absent(self):
+        """distance_m stays None when cutting_distance is not in dp[48]."""
+        import json as _j
+        dp48_no_dist = _j.dumps({"response": {"cutting_time": 1000, "running_time": 2000, "no_of_fatal_error": 0}})
+        state_resp = {"datapoints": {"48": {"value": dp48_no_dist}}}
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, state_resp),
+        )
+        devices = await client.get_devices(consumer_auth)
+        assert devices[0].distance_m is None
+
+    async def test_xlink_gps_none_when_field_absent(self):
+        """latitude/longitude stay None when not present in dp[32]."""
+        import json as _j
+        dp32_no_gps = _j.dumps({"request": {"mower_main_state": 2, "battery_status": 80}})
+        state_resp = {"datapoints": {"32": {"value": dp32_no_gps}}}
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, state_resp),
+        )
+        devices = await client.get_devices(consumer_auth)
+        assert devices[0].latitude is None
+        assert devices[0].longitude is None
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +524,7 @@ class TestCramerDevice:
     def test_no_product_code_but_has_state_is_mower(self):
         """xlink devices have no productCode but state data marks them as mowers."""
         d = CramerDevice(
-            device_id="1", product_id="p", name="Nacho",
+            device_id="1", product_id="p", name="Test Mower",
             serial_number="SN", mac="", product_code="",
             state="2", battery=99, is_online=True,
         )

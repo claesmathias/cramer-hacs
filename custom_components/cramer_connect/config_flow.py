@@ -40,9 +40,11 @@ class CramerConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 auth = await client.authenticate(
                     user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
                 )
-            except CramerConnectAuthError:
+            except CramerConnectAuthError as err:
+                _LOGGER.error("Authentication failed: %s", err)
                 errors["base"] = "invalid_auth"
-            except CramerConnectApiError:
+            except (CramerConnectApiError, aiohttp.ClientError) as err:
+                _LOGGER.error("Cannot connect to Cramer API: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception:
                 _LOGGER.exception("Unexpected error during config flow")

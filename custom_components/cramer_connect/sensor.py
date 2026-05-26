@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfTime
+from homeassistant.const import PERCENTAGE, UnitOfLength, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -61,6 +61,28 @@ MOWER_SENSORS: tuple[SensorEntityDescription, ...] = (
         name="Error count",
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:alert-circle",
+    ),
+    SensorEntityDescription(
+        key="distance",
+        name="Total mowing distance",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        suggested_display_precision=2,
+        icon="mdi:map-marker-distance",
+    ),
+    SensorEntityDescription(
+        key="latitude",
+        name="Latitude",
+        native_unit_of_measurement="°",
+        suggested_display_precision=6,
+        icon="mdi:latitude",
+    ),
+    SensorEntityDescription(
+        key="longitude",
+        name="Longitude",
+        native_unit_of_measurement="°",
+        suggested_display_precision=6,
+        icon="mdi:longitude",
     ),
 )
 
@@ -115,9 +137,14 @@ class CramerMowerSensor(CoordinatorEntity[CramerConnectCoordinator], SensorEntit
     def available(self) -> bool:
         if self._device_id not in self.coordinator.data:
             return False
-        # Statistics are historical and always available; real-time ones need online
-        if self.entity_description.key in ("cutting_time", "running_time", "error_count"):
+        key = self.entity_description.key
+        # Historical stats are always available regardless of online status
+        if key in ("cutting_time", "running_time", "error_count", "distance"):
             return True
+        # Next start is only meaningful when there is actually a schedule
+        if key == "next_start":
+            return self._device.is_online and self._device.next_start_ts is not None
+        # All other real-time sensors require the device to be online
         return self._device.is_online
 
     @property
@@ -148,6 +175,17 @@ class CramerMowerSensor(CoordinatorEntity[CramerConnectCoordinator], SensorEntit
 
         if key == "error_count":
             return device.error_count
+
+        if key == "distance":
+            if device.distance_m is None:
+                return None
+            return round(device.distance_m / 1000, 3)
+
+        if key == "latitude":
+            return device.latitude
+
+        if key == "longitude":
+            return device.longitude
 
         return None
 

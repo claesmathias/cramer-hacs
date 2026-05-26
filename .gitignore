@@ -16,3 +16,10 @@ venv/
 # Editor
 .vscode/
 .idea/
+
+# Secrets and local config
+.env
+.claude/
+
+# Certificates
+*.pem

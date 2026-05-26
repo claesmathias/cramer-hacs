@@ -46,6 +46,10 @@ class CramerDevice:
     cutting_time_s: int | None = None
     running_time_s: int | None = None
     error_count: int | None = None
+    distance_m: int | None = None
+    # GPS from dp[32]
+    latitude: float | None = None
+    longitude: float | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -169,11 +173,15 @@ class CramerConnectClient:
     async def _is_fleet_user(self, username: str) -> bool:
         url = f"{FLEET_AUTH_URL}/api/Authorization/user-exist"
         payload = {"username": username}
-        async with self._session.post(url, json=payload, headers=_base_headers()) as resp:
-            if resp.status != 200:
-                _LOGGER.debug("user-exist returned %s, assuming non-fleet", resp.status)
-                return False
-            data = await resp.json()
+        try:
+            async with self._session.post(url, json=payload, headers=_base_headers()) as resp:
+                if resp.status != 200:
+                    _LOGGER.debug("user-exist returned %s, assuming non-fleet", resp.status)
+                    return False
+                data = await resp.json()
+        except Exception as err:
+            _LOGGER.debug("user-exist failed (%s), assuming non-fleet", err)
+            return False
         return bool(data.get("existsOnFleet", False))
 
     async def _fleet_login(self, username: str, password: str) -> tuple[str, str]:
@@ -296,17 +304,22 @@ class CramerConnectClient:
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
         }
-        async with self._session.post(url, data=form, headers=headers) as resp:
-            if resp.status in (400, 401, 403):
-                text = await resp.text()
-                _LOGGER.debug("GUC direct login %s: %s", resp.status, text)
-                raise CramerConnectAuthError("Invalid credentials (GUC)")
-            if resp.status != 200:
-                text = await resp.text()
-                raise CramerConnectApiError(
-                    f"GUC direct login failed ({resp.status}): {text}"
-                )
-            data = await resp.json()
+        try:
+            async with self._session.post(url, data=form, headers=headers) as resp:
+                if resp.status in (400, 401, 403):
+                    text = await resp.text()
+                    _LOGGER.debug("GUC direct login %s: %s", resp.status, text)
+                    raise CramerConnectAuthError("Invalid credentials (GUC)")
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise CramerConnectApiError(
+                        f"GUC direct login failed ({resp.status}): {text}"
+                    )
+                data = await resp.json()
+        except CramerConnectApiError:
+            raise
+        except Exception as err:
+            raise CramerConnectApiError(f"GUC direct login connection error: {err}") from err
 
         token = data.get("access_token")
         if not token:
@@ -348,7 +361,8 @@ class CramerConnectClient:
             if not isinstance(result, dict):
                 continue
             for key in ("state", "battery", "next_start_ts",
-                        "cutting_time_s", "running_time_s", "error_count"):
+                        "cutting_time_s", "running_time_s", "error_count",
+                        "distance_m", "latitude", "longitude"):
                 if result.get(key) is not None:
                     setattr(device, key, result[key])
 
@@ -384,7 +398,7 @@ class CramerConnectClient:
         datapoints = data.get("datapoints") or {}
         result: dict[str, Any] = {}
 
-        # --- dp[32]: live mower state ---
+        # --- dp[32]: live mower state + GPS ---
         dp32 = datapoints.get("32")
         if isinstance(dp32, dict) and isinstance(dp32.get("value"), str):
             try:
@@ -396,6 +410,10 @@ class CramerConnectClient:
                 ns = req.get("next_start")
                 if ns is not None and int(ns) != 0xFFFFFFFF:
                     result["next_start_ts"] = int(ns)
+                if req.get("latitude") is not None:
+                    result["latitude"] = float(req["latitude"])
+                if req.get("longitude") is not None:
+                    result["longitude"] = float(req["longitude"])
             except (ValueError, TypeError, KeyError):
                 pass
 
@@ -410,6 +428,8 @@ class CramerConnectClient:
                     result["running_time_s"] = int(resp_obj["running_time"])
                 if resp_obj.get("no_of_fatal_error") is not None:
                     result["error_count"] = int(resp_obj["no_of_fatal_error"])
+                if resp_obj.get("cutting_distance") is not None:
+                    result["distance_m"] = int(resp_obj["cutting_distance"])
             except (ValueError, TypeError, KeyError):
                 pass
 

@@ -19,8 +19,8 @@ def _device(**kwargs) -> CramerDevice:
     defaults = dict(
         device_id="dev-1",
         product_id="prod-1",
-        name="Nacho",
-        serial_number="SN001",
+        name="Test Mower",
+        serial_number="SN-TEST-001",
         mac="",
         product_code="RLM1",
         state="4",
@@ -30,6 +30,9 @@ def _device(**kwargs) -> CramerDevice:
         cutting_time_s=7200,
         running_time_s=14400,
         error_count=3,
+        distance_m=5000,
+        latitude=52.0,
+        longitude=5.0,
     )
     return CramerDevice(**{**defaults, **kwargs})
 
@@ -115,6 +118,12 @@ class TestNextStartSensor:
     def test_unavailable_when_offline(self):
         assert _sensor("next_start", _device(is_online=False)).available is False
 
+    def test_unavailable_when_no_schedule(self):
+        assert _sensor("next_start", _device(next_start_ts=None)).available is False
+
+    def test_available_when_online_and_scheduled(self):
+        assert _sensor("next_start").available is True
+
 
 # ---------------------------------------------------------------------------
 # Cutting-time sensor
@@ -185,7 +194,56 @@ class TestDeviceInfo:
         assert (DOMAIN, "dev-1") in info["identifiers"]
 
     def test_serial_number(self):
-        assert _sensor("state").device_info["serial_number"] == "SN001"
+        assert _sensor("state").device_info["serial_number"] == "SN-TEST-001"
+
+
+# ---------------------------------------------------------------------------
+# Distance sensor
+# ---------------------------------------------------------------------------
+
+class TestDistanceSensor:
+    def test_value_in_km(self):
+        assert _sensor("distance").native_value == 5.0  # 5000m / 1000
+
+    def test_fractional_km(self):
+        assert _sensor("distance", _device(distance_m=1500)).native_value == 1.5
+
+    def test_sub_km_precision(self):
+        assert _sensor("distance", _device(distance_m=250)).native_value == 0.25
+
+    def test_none_when_missing(self):
+        assert _sensor("distance", _device(distance_m=None)).native_value is None
+
+    def test_always_available_even_offline(self):
+        assert _sensor("distance", _device(is_online=False)).available is True
+
+
+# ---------------------------------------------------------------------------
+# GPS sensors
+# ---------------------------------------------------------------------------
+
+class TestGpsSensors:
+    def test_latitude_value(self):
+        assert _sensor("latitude").native_value == 52.0
+
+    def test_longitude_value(self):
+        assert _sensor("longitude").native_value == 5.0
+
+    def test_latitude_none_when_no_gps(self):
+        assert _sensor("latitude", _device(latitude=None)).native_value is None
+
+    def test_longitude_none_when_no_gps(self):
+        assert _sensor("longitude", _device(longitude=None)).native_value is None
+
+    def test_unavailable_when_offline(self):
+        assert _sensor("latitude", _device(is_online=False)).available is False
+
+    def test_longitude_unavailable_when_offline(self):
+        assert _sensor("longitude", _device(is_online=False)).available is False
+
+    def test_available_when_online(self):
+        assert _sensor("latitude").available is True
+        assert _sensor("longitude").available is True
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +264,7 @@ class TestOnlineSensor:
         from custom_components.cramer_connect.const import DOMAIN
         info = _online_sensor().device_info
         assert (DOMAIN, "dev-1") in info["identifiers"]
-        assert info["name"] == "Nacho"
+        assert info["name"] == "Test Mower"
 
     def test_unique_id_suffix(self):
         sensor = _online_sensor()

@@ -2,6 +2,7 @@
 
 
 def pytest_addoption(parser):
+    parser.addoption("--username", action="store", default=None, help="Cramer Connect username (email)")
     parser.addoption("--password", action="store", default=None, help="Cramer Connect password")
 import sys
 import types
@@ -42,6 +43,15 @@ class _UnitOfTime:
 
 
 _const.UnitOfTime = _UnitOfTime
+
+
+class _UnitOfLength:
+    METERS = "m"
+    KILOMETERS = "km"
+    MILES = "mi"
+
+
+_const.UnitOfLength = _UnitOfLength
 
 # ---- homeassistant.exceptions ----------------------------------------------
 _exc = _module("homeassistant.exceptions")
@@ -118,10 +128,14 @@ _sensor_mod.SensorStateClass = type(
     "SensorStateClass", (),
     {"MEASUREMENT": "measurement", "TOTAL_INCREASING": "total_increasing"},
 )
+def _sed_init(self, **kw):
+    self.__dict__.update(kw)
+    self.__dict__.setdefault("suggested_display_precision", None)
+
 _sensor_mod.SensorEntityDescription = type(
     "SensorEntityDescription",
     (),
-    {"__init__": lambda self, **kw: self.__dict__.update(kw)},
+    {"__init__": _sed_init},
 )
 
 # ---- homeassistant.components.binary_sensor --------------------------------
