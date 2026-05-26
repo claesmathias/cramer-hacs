@@ -31,18 +31,27 @@ async def client():
 
 
 class TestLiveLogin:
-    async def test_fleet_login_returns_token_and_org(self, client, password):
+    async def test_login_returns_tokens(self, client, password):
         auth = await client.authenticate(USERNAME, password)
 
-        print(f"\nfleet_token  : {auth.fleet_token[:40]}...")
-        print(f"guc_token    : {auth.guc_token[:40]}...")
-        print(f"organization : {auth.organization_id}")
-        print(f"guc_expires  : {auth.guc_expires_in}s")
+        print(f"\nis_fleet_user : {auth.is_fleet_user}")
+        if auth.is_fleet_user:
+            print(f"fleet_token   : {auth.fleet_token[:40]}...")
+            print(f"organization  : {auth.organization_id}")
+        else:
+            print(f"xlink_token   : {auth.xlink_token[:40]}...")
+            print(f"xlink_user_id : {auth.xlink_user_id}")
+        print(f"guc_token     : {auth.guc_token[:40]}...")
+        print(f"guc_expires   : {auth.guc_expires_in}s")
 
-        assert auth.fleet_token, "fleet_token should not be empty"
         assert auth.guc_token, "guc_token should not be empty"
-        assert auth.organization_id, "organization_id should not be empty"
         assert auth.guc_expires_in > 0
+        if auth.is_fleet_user:
+            assert auth.fleet_token, "fleet_token should not be empty for fleet users"
+            assert auth.organization_id, "organization_id should not be empty for fleet users"
+        else:
+            assert auth.xlink_token, "xlink_token should not be empty for consumer users"
+            assert auth.xlink_user_id, "xlink_user_id should not be empty for consumer users"
 
     async def test_devices_listed_after_login(self, client, password):
         auth = await client.authenticate(USERNAME, password)

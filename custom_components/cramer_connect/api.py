@@ -254,7 +254,7 @@ class CramerConnectClient:
             data = await resp.json()
 
         token = data.get("access_token")
-        user_id = data.get("user_id", "")
+        user_id = str(data.get("user_id", ""))
         if not token:
             raise CramerConnectAuthError("No access_token in xlink login response")
         return token, user_id
