@@ -1,6 +1,7 @@
 """Cramer Connect API client."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -321,7 +322,64 @@ class CramerConnectClient:
                     f"Failed to get xlink devices ({resp.status}): {text}"
                 )
             data: list[dict] = await resp.json()
-        return self._parse_devices(data)
+
+        devices = self._parse_devices(data)
+
+        # Enrich each device with state/battery from the device-state endpoint
+        status_results = await asyncio.gather(
+            *[self._get_xlink_device_state(auth, d) for d in devices],
+            return_exceptions=True,
+        )
+        for device, result in zip(devices, status_results):
+            if isinstance(result, Exception):
+                _LOGGER.debug("Could not fetch state for %s: %s", device.name, result)
+                continue
+            state, battery = result
+            if state is not None:
+                device.state = state
+            if battery is not None:
+                device.battery = battery
+
+        return devices
+
+    async def _get_xlink_device_state(
+        self, auth: CramerAuth, device: CramerDevice
+    ) -> tuple[str | None, int | None]:
+        """Fetch state (datapoint 2) and battery (datapoint 3) for one device."""
+        product_id = device.product_id or device.raw.get("product_id", "")
+        device_id = device.device_id
+        url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
+        headers = {
+            **_base_headers(),
+            "Access-Token": auth.xlink_token,
+            "Xlink-Access-Token": auth.xlink_token,
+            "Xlink-User-Id": auth.xlink_user_id,
+        }
+        async with self._session.get(url, headers=headers) as resp:
+            if resp.status != 200:
+                return None, None
+            data = await resp.json()
+
+        datapoints = data.get("datapoints") or {}
+        state: str | None = None
+        battery: int | None = None
+
+        dp2 = datapoints.get("2")
+        if dp2:
+            raw_val = dp2.get("value") if isinstance(dp2, dict) else None
+            if raw_val is not None:
+                state = str(raw_val)
+
+        dp3 = datapoints.get("3")
+        if dp3:
+            raw_val = dp3.get("value") if isinstance(dp3, dict) else None
+            if raw_val is not None:
+                try:
+                    battery = int(raw_val)
+                except (ValueError, TypeError):
+                    pass
+
+        return state, battery
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -333,6 +391,17 @@ class CramerConnectClient:
         for item in data or []:
             product_model = item.get("productModel") or {}
             product_code = item.get("productCode") or product_model.get("productCode", "")
+
+            # xlink returns state/battery nested in deviceStateBean;
+            # fleet API returns them at the top level
+            dsb = item.get("deviceStateBean") or {}
+            raw_state = item.get("state")
+            if raw_state is None:
+                raw_state = dsb.get("mower_main_state") if dsb.get("mower_main_state") is not None else dsb.get("current_mower_main_state")
+            battery = item.get("battery")
+            if battery is None:
+                battery = dsb.get("battery_status")
+
             devices.append(
                 CramerDevice(
                     device_id=str(item.get("id", "")),
@@ -341,8 +410,8 @@ class CramerConnectClient:
                     serial_number=item.get("sn", ""),
                     mac=item.get("mac", ""),
                     product_code=product_code,
-                    state=str(item["state"]) if item.get("state") is not None else None,
-                    battery=item.get("battery"),
+                    state=str(raw_state) if raw_state is not None else None,
+                    battery=battery,
                     is_online=bool(item.get("is_online", False)),
                     raw=item,
                 )
