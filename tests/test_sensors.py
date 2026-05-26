@@ -8,7 +8,7 @@ import pytest
 
 from custom_components.cramer_connect.api import CramerDevice
 from custom_components.cramer_connect.sensor import CramerMowerSensor, MOWER_SENSORS
-from custom_components.cramer_connect.binary_sensor import CramerOnlineSensor
+from custom_components.cramer_connect.binary_sensor import CramerOnlineSensor, CramerUpdateSensor
 
 
 # ---------------------------------------------------------------------------
@@ -31,8 +31,12 @@ def _device(**kwargs) -> CramerDevice:
         running_time_s=14400,
         error_count=3,
         distance_m=5000,
+        charging_time_s=3600,
         latitude=52.0,
         longitude=5.0,
+        software_version="13.5.100000000",
+        sw_update_available=True,
+        mower_model="Test RM1000",
     )
     return CramerDevice(**{**defaults, **kwargs})
 
@@ -52,6 +56,12 @@ def _sensor(key: str, device: CramerDevice | None = None) -> CramerMowerSensor:
     sensor.entity_description = description
     sensor.coordinator = coord
     return sensor
+
+
+def _update_sensor(device: CramerDevice | None = None) -> CramerUpdateSensor:
+    dev = device or _device()
+    coord = _coordinator(dev)
+    return CramerUpdateSensor(coord, dev.device_id)
 
 
 def _online_sensor(device: CramerDevice | None = None) -> CramerOnlineSensor:
@@ -179,12 +189,17 @@ class TestErrorCountSensor:
 # ---------------------------------------------------------------------------
 
 class TestDeviceInfo:
-    def test_fleet_device_uses_product_code(self):
+    def test_mower_model_takes_priority(self):
         info = _sensor("state").device_info
+        assert info["model"] == "Test RM1000"
+
+    def test_falls_back_to_product_code(self):
+        dev = _device(mower_model=None)
+        info = _sensor("state", dev).device_info
         assert info["model"] == "RLM1"
 
     def test_xlink_device_fallback_model(self):
-        dev = _device(product_code="")
+        dev = _device(product_code="", mower_model=None)
         info = _sensor("state", dev).device_info
         assert info["model"] == "Robotic Mower"
 
@@ -195,6 +210,42 @@ class TestDeviceInfo:
 
     def test_serial_number(self):
         assert _sensor("state").device_info["serial_number"] == "SN-TEST-001"
+
+
+# ---------------------------------------------------------------------------
+# Charging-time sensor
+# ---------------------------------------------------------------------------
+
+class TestChargingTimeSensor:
+    def test_value_in_hours(self):
+        assert _sensor("charging_time").native_value == 1.0  # 3600s
+
+    def test_fractional_hours(self):
+        assert _sensor("charging_time", _device(charging_time_s=5400)).native_value == 1.5
+
+    def test_none_when_missing(self):
+        assert _sensor("charging_time", _device(charging_time_s=None)).native_value is None
+
+    def test_always_available_even_offline(self):
+        assert _sensor("charging_time", _device(is_online=False)).available is True
+
+
+# ---------------------------------------------------------------------------
+# Software-version sensor
+# ---------------------------------------------------------------------------
+
+class TestSoftwareVersionSensor:
+    def test_value(self):
+        assert _sensor("software_version").native_value == "13.5.100000000"
+
+    def test_none_when_missing(self):
+        assert _sensor("software_version", _device(software_version=None)).native_value is None
+
+    def test_unavailable_when_no_data(self):
+        assert _sensor("software_version", _device(software_version=None)).available is False
+
+    def test_available_when_data_present(self):
+        assert _sensor("software_version").available is True
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +265,11 @@ class TestDistanceSensor:
     def test_none_when_missing(self):
         assert _sensor("distance", _device(distance_m=None)).native_value is None
 
-    def test_always_available_even_offline(self):
-        assert _sensor("distance", _device(is_online=False)).available is True
+    def test_available_when_data_present(self):
+        assert _sensor("distance").available is True
+
+    def test_unavailable_when_no_data(self):
+        assert _sensor("distance", _device(distance_m=None)).available is False
 
 
 # ---------------------------------------------------------------------------
@@ -235,13 +289,11 @@ class TestGpsSensors:
     def test_longitude_none_when_no_gps(self):
         assert _sensor("longitude", _device(longitude=None)).native_value is None
 
-    def test_unavailable_when_offline(self):
-        assert _sensor("latitude", _device(is_online=False)).available is False
+    def test_unavailable_when_no_gps_data(self):
+        assert _sensor("latitude", _device(latitude=None, longitude=None)).available is False
+        assert _sensor("longitude", _device(latitude=None, longitude=None)).available is False
 
-    def test_longitude_unavailable_when_offline(self):
-        assert _sensor("longitude", _device(is_online=False)).available is False
-
-    def test_available_when_online(self):
+    def test_available_when_coordinates_present(self):
         assert _sensor("latitude").available is True
         assert _sensor("longitude").available is True
 
@@ -269,3 +321,30 @@ class TestOnlineSensor:
     def test_unique_id_suffix(self):
         sensor = _online_sensor()
         assert sensor._attr_unique_id == "dev-1_online"
+
+
+# ---------------------------------------------------------------------------
+# Update available binary sensor
+# ---------------------------------------------------------------------------
+
+class TestUpdateSensor:
+    def test_is_on_when_update_available(self):
+        assert _update_sensor().is_on is True
+
+    def test_is_off_when_no_update(self):
+        assert _update_sensor(_device(sw_update_available=False)).is_on is False
+
+    def test_unavailable_when_no_data(self):
+        assert _update_sensor(_device(sw_update_available=None)).available is False
+
+    def test_available_when_data_present(self):
+        assert _update_sensor().available is True
+
+    def test_unique_id_suffix(self):
+        assert _update_sensor()._attr_unique_id == "dev-1_update"
+
+    def test_device_info_uses_mower_model(self):
+        from custom_components.cramer_connect.const import DOMAIN
+        info = _update_sensor().device_info
+        assert (DOMAIN, "dev-1") in info["identifiers"]
+        assert info["model"] == "Test RM1000"

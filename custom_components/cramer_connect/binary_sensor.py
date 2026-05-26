@@ -22,11 +22,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: CramerConnectCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities = [
-        CramerOnlineSensor(coordinator, device_id)
-        for device_id, device in coordinator.data.items()
-        if device.is_mower
-    ]
+    entities = []
+    for device_id, device in coordinator.data.items():
+        if not device.is_mower:
+            continue
+        entities.append(CramerOnlineSensor(coordinator, device_id))
+        entities.append(CramerUpdateSensor(coordinator, device_id))
     async_add_entities(entities)
 
 
@@ -56,7 +57,7 @@ class CramerOnlineSensor(CoordinatorEntity[CramerConnectCoordinator], BinarySens
             identifiers={(DOMAIN, device.device_id)},
             name=device.name,
             manufacturer="Cramer",
-            model=device.product_code or "Robotic Mower",
+            model=device.mower_model or device.product_code or "Robotic Mower",
             serial_number=device.serial_number,
         )
 
@@ -67,3 +68,44 @@ class CramerOnlineSensor(CoordinatorEntity[CramerConnectCoordinator], BinarySens
     @property
     def is_on(self) -> bool:
         return self._device.is_online
+
+
+class CramerUpdateSensor(CoordinatorEntity[CramerConnectCoordinator], BinarySensorEntity):
+    _attr_has_entity_name = True
+    _attr_name = "Update available"
+    _attr_icon = "mdi:update"
+
+    def __init__(
+        self,
+        coordinator: CramerConnectCoordinator,
+        device_id: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._device_id = device_id
+        self._attr_unique_id = f"{device_id}_update"
+
+    @property
+    def _device(self) -> CramerDevice:
+        return self.coordinator.data[self._device_id]
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        device = self._device
+        return DeviceInfo(
+            identifiers={(DOMAIN, device.device_id)},
+            name=device.name,
+            manufacturer="Cramer",
+            model=device.mower_model or device.product_code or "Robotic Mower",
+            serial_number=device.serial_number,
+        )
+
+    @property
+    def available(self) -> bool:
+        return (
+            self._device_id in self.coordinator.data
+            and self._device.sw_update_available is not None
+        )
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self._device.sw_update_available)

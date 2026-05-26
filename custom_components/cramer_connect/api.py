@@ -45,11 +45,18 @@ class CramerDevice:
     # Statistics from dp[48]
     cutting_time_s: int | None = None
     running_time_s: int | None = None
+    charging_time_s: int | None = None
     error_count: int | None = None
+    # Distance from dp[225] (hex metres)
     distance_m: int | None = None
-    # GPS from dp[32]
+    # GPS from dp[34]
     latitude: float | None = None
     longitude: float | None = None
+    # Software info from dp[117] / dp[246]
+    software_version: str | None = None
+    sw_update_available: bool | None = None
+    # Hardware model from dp[21]
+    mower_model: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -361,8 +368,9 @@ class CramerConnectClient:
             if not isinstance(result, dict):
                 continue
             for key in ("state", "battery", "next_start_ts",
-                        "cutting_time_s", "running_time_s", "error_count",
-                        "distance_m", "latitude", "longitude"):
+                        "cutting_time_s", "running_time_s", "charging_time_s", "error_count",
+                        "distance_m", "latitude", "longitude",
+                        "software_version", "sw_update_available", "mower_model"):
                 if result.get(key) is not None:
                     setattr(device, key, result[key])
 
@@ -398,7 +406,7 @@ class CramerConnectClient:
         datapoints = data.get("datapoints") or {}
         result: dict[str, Any] = {}
 
-        # --- dp[32]: live mower state + GPS ---
+        # --- dp[32]: live mower state ---
         dp32 = datapoints.get("32")
         if isinstance(dp32, dict) and isinstance(dp32.get("value"), str):
             try:
@@ -410,6 +418,14 @@ class CramerConnectClient:
                 ns = req.get("next_start")
                 if ns is not None and int(ns) != 0xFFFFFFFF:
                     result["next_start_ts"] = int(ns)
+            except (ValueError, TypeError, KeyError):
+                pass
+
+        # --- dp[34]: current GPS position ---
+        dp34 = datapoints.get("34")
+        if isinstance(dp34, dict) and isinstance(dp34.get("value"), str):
+            try:
+                req = _json.loads(dp34["value"]).get("request") or {}
                 if req.get("latitude") is not None:
                     result["latitude"] = float(req["latitude"])
                 if req.get("longitude") is not None:
@@ -426,12 +442,50 @@ class CramerConnectClient:
                     result["cutting_time_s"] = int(resp_obj["cutting_time"])
                 if resp_obj.get("running_time") is not None:
                     result["running_time_s"] = int(resp_obj["running_time"])
+                if resp_obj.get("charging_time") is not None:
+                    result["charging_time_s"] = int(resp_obj["charging_time"])
                 if resp_obj.get("no_of_fatal_error") is not None:
                     result["error_count"] = int(resp_obj["no_of_fatal_error"])
-                if resp_obj.get("cutting_distance") is not None:
-                    result["distance_m"] = int(resp_obj["cutting_distance"])
             except (ValueError, TypeError, KeyError):
                 pass
+
+        # --- dp[117]: software versions + update flag ---
+        dp117 = datapoints.get("117")
+        if isinstance(dp117, dict) and isinstance(dp117.get("value"), str):
+            try:
+                parsed = _json.loads(dp117["value"])
+                resp_obj = parsed.get("response") or {}
+                if resp_obj.get("sw_update") is not None:
+                    result["sw_update_available"] = bool(resp_obj["sw_update"])
+            except (ValueError, TypeError, KeyError):
+                pass
+
+        # --- dp[21]: hardware model name ---
+        dp21 = datapoints.get("21")
+        if isinstance(dp21, dict) and isinstance(dp21.get("value"), str):
+            try:
+                resp_obj = _json.loads(dp21["value"]).get("response") or {}
+                raw_name = resp_obj.get("mower_name", "")
+                clean_name = raw_name.split("\x00")[0].strip()
+                if clean_name:
+                    result["mower_model"] = clean_name
+            except (ValueError, TypeError, KeyError):
+                pass
+
+        # --- dp[225]: total mowing distance (hex metres) ---
+        dp225 = datapoints.get("225")
+        if isinstance(dp225, dict) and isinstance(dp225.get("value"), str):
+            try:
+                result["distance_m"] = int(dp225["value"].strip(), 16)
+            except (ValueError, TypeError):
+                pass
+
+        # --- dp[246]: software version string ---
+        dp246 = datapoints.get("246")
+        if isinstance(dp246, dict) and isinstance(dp246.get("value"), str):
+            val = dp246["value"].strip()
+            if val:
+                result["software_version"] = val
 
         return result
 

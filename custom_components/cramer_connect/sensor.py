@@ -57,10 +57,23 @@ MOWER_SENSORS: tuple[SensorEntityDescription, ...] = (
         icon="mdi:timer-outline",
     ),
     SensorEntityDescription(
+        key="charging_time",
+        name="Total charging time",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        icon="mdi:battery-charging",
+    ),
+    SensorEntityDescription(
         key="error_count",
         name="Error count",
         state_class=SensorStateClass.TOTAL_INCREASING,
         icon="mdi:alert-circle",
+    ),
+    SensorEntityDescription(
+        key="software_version",
+        name="Software version",
+        icon="mdi:chip",
     ),
     SensorEntityDescription(
         key="distance",
@@ -129,7 +142,7 @@ class CramerMowerSensor(CoordinatorEntity[CramerConnectCoordinator], SensorEntit
             identifiers={(DOMAIN, device.device_id)},
             name=device.name,
             manufacturer="Cramer",
-            model=device.product_code or "Robotic Mower",
+            model=device.mower_model or device.product_code or "Robotic Mower",
             serial_number=device.serial_number,
         )
 
@@ -139,8 +152,15 @@ class CramerMowerSensor(CoordinatorEntity[CramerConnectCoordinator], SensorEntit
             return False
         key = self.entity_description.key
         # Historical stats are always available regardless of online status
-        if key in ("cutting_time", "running_time", "error_count", "distance"):
+        if key in ("cutting_time", "running_time", "charging_time", "error_count"):
             return True
+        # These sensors are only available when the API provides the data
+        if key == "distance":
+            return self._device.distance_m is not None
+        if key == "software_version":
+            return self._device.software_version is not None
+        if key in ("latitude", "longitude"):
+            return self._device.latitude is not None and self._device.longitude is not None
         # Next start is only meaningful when there is actually a schedule
         if key == "next_start":
             return self._device.is_online and self._device.next_start_ts is not None
@@ -173,8 +193,16 @@ class CramerMowerSensor(CoordinatorEntity[CramerConnectCoordinator], SensorEntit
                 return None
             return round(device.running_time_s / 3600, 1)
 
+        if key == "charging_time":
+            if device.charging_time_s is None:
+                return None
+            return round(device.charging_time_s / 3600, 1)
+
         if key == "error_count":
             return device.error_count
+
+        if key == "software_version":
+            return device.software_version
 
         if key == "distance":
             if device.distance_m is None:

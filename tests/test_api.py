@@ -59,8 +59,16 @@ DP32_VALUE = _json.dumps({
         "battery_status": 78,
         "next_start": 1800000000,
         "source_for_next_start": 2,
-        "latitude": 52.0,
-        "longitude": 5.0,
+    },
+    "response": {"return_code": 0},
+})
+
+DP34_VALUE = _json.dumps({
+    "request": {
+        "latitude": "52.0000",
+        "longitude": "5.0000",
+        "hdop": "1.0",
+        "request_time": "2026-01-01T12:00:00Z",
     },
     "response": {"return_code": 0},
 })
@@ -71,15 +79,38 @@ DP48_VALUE = _json.dumps({
         "return_code": 0,
         "cutting_time": 3600,
         "running_time": 7200,
+        "charging_time": 1800,
         "no_of_fatal_error": 5,
-        "cutting_distance": 12500,
+    },
+})
+
+DP117_VALUE = _json.dumps({
+    "request": {
+        "mower_main_application_major_sw_version": 13,
+        "mower_main_application_minor_sw_version": 5,
+        "mower_main_application_build_no": 100000000,
+    },
+    "response": {"return_code": 0, "sw_update": 1},
+})
+
+DP21_VALUE = _json.dumps({
+    "request": {},
+    "response": {
+        "return_code": 0,
+        "mower_name": "Test RM1000\x00\xff\xff",
+        "serial_number": 100000001,
     },
 })
 
 DEVICE_STATE_OK = {
     "datapoints": {
+        "21": {"report_time": "2026-01-01T00:00:00Z", "value": DP21_VALUE},
         "32": {"report_time": "2026-05-26T12:00:00Z", "value": DP32_VALUE},
+        "34": {"report_time": "2026-05-26T12:00:00Z", "value": DP34_VALUE},
         "48": {"report_time": "2026-03-01T00:00:00Z", "value": DP48_VALUE},
+        "117": {"report_time": "2026-05-26T12:00:00Z", "value": DP117_VALUE},
+        "225": {"report_time": "2026-05-26T12:00:00Z", "value": "00002710"},  # 10000 m
+        "246": {"report_time": "2026-05-26T12:00:00Z", "value": "13.5.100000000"},
     }
 }
 
@@ -414,10 +445,14 @@ class TestGetDevices:
         assert d.next_start_ts == 1800000000
         assert d.cutting_time_s == 3600
         assert d.running_time_s == 7200
+        assert d.charging_time_s == 1800
         assert d.error_count == 5
-        assert d.distance_m == 12500
+        assert d.distance_m == 10000      # 0x2710
         assert d.latitude == 52.0
         assert d.longitude == 5.0
+        assert d.software_version == "13.5.100000000"
+        assert d.sw_update_available is True
+        assert d.mower_model == "Test RM1000"
         assert d.is_mower is True   # state is not None, no productCode → is_mower
 
     async def test_xlink_no_schedule_next_start_is_none(self):
@@ -454,11 +489,11 @@ class TestGetDevices:
         assert devices[0].state is None
         assert devices[0].battery is None
 
-    async def test_xlink_distance_none_when_field_absent(self):
-        """distance_m stays None when cutting_distance is not in dp[48]."""
+    async def test_xlink_distance_none_when_dp225_absent(self):
+        """distance_m stays None when dp[225] is not in response."""
         import json as _j
-        dp48_no_dist = _j.dumps({"response": {"cutting_time": 1000, "running_time": 2000, "no_of_fatal_error": 0}})
-        state_resp = {"datapoints": {"48": {"value": dp48_no_dist}}}
+        dp48_only = _j.dumps({"response": {"cutting_time": 1000, "running_time": 2000, "no_of_fatal_error": 0}})
+        state_resp = {"datapoints": {"48": {"value": dp48_only}}}
         consumer_auth = _auth(
             is_fleet_user=False, fleet_token="", organization_id="",
             xlink_token="tok", xlink_user_id="uid",
@@ -470,11 +505,11 @@ class TestGetDevices:
         devices = await client.get_devices(consumer_auth)
         assert devices[0].distance_m is None
 
-    async def test_xlink_gps_none_when_field_absent(self):
-        """latitude/longitude stay None when not present in dp[32]."""
+    async def test_xlink_gps_none_when_dp34_absent(self):
+        """latitude/longitude stay None when dp[34] is not in response."""
         import json as _j
-        dp32_no_gps = _j.dumps({"request": {"mower_main_state": 2, "battery_status": 80}})
-        state_resp = {"datapoints": {"32": {"value": dp32_no_gps}}}
+        dp32_only = _j.dumps({"request": {"mower_main_state": 2, "battery_status": 80}})
+        state_resp = {"datapoints": {"32": {"value": dp32_only}}}
         consumer_auth = _auth(
             is_fleet_user=False, fleet_token="", organization_id="",
             xlink_token="tok", xlink_user_id="uid",
@@ -486,6 +521,38 @@ class TestGetDevices:
         devices = await client.get_devices(consumer_auth)
         assert devices[0].latitude is None
         assert devices[0].longitude is None
+
+    async def test_xlink_sw_update_parsed(self):
+        """sw_update_available is set from dp[117].response.sw_update."""
+        import json as _j
+        dp117 = _j.dumps({"request": {}, "response": {"return_code": 0, "sw_update": 0}})
+        state_resp = {"datapoints": {"117": {"value": dp117}}}
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, state_resp),
+        )
+        devices = await client.get_devices(consumer_auth)
+        assert devices[0].sw_update_available is False
+
+    async def test_xlink_mower_model_stripped_of_nulls(self):
+        """mower_model is cleaned of null bytes from dp[21].response.mower_name."""
+        import json as _j
+        dp21 = _j.dumps({"request": {}, "response": {"mower_name": "Test RM1000\x00\xff\xff"}})
+        state_resp = {"datapoints": {"21": {"value": dp21}}}
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, state_resp),
+        )
+        devices = await client.get_devices(consumer_auth)
+        assert devices[0].mower_model == "Test RM1000"
 
 
 # ---------------------------------------------------------------------------

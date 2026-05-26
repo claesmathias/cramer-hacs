@@ -143,7 +143,7 @@ _bs_mod = _module("homeassistant.components.binary_sensor")
 _bs_mod.BinarySensorEntity = type("BinarySensorEntity", (), {})
 _bs_mod.BinarySensorDeviceClass = type(
     "BinarySensorDeviceClass", (),
-    {"CONNECTIVITY": "connectivity"},
+    {"CONNECTIVITY": "connectivity", "UPDATE": "update"},
 )
 
 # ---- homeassistant.data_entry_flow -----------------------------------------
