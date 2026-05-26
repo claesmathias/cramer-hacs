@@ -1,4 +1,8 @@
 """Inject homeassistant stubs before any test module is imported."""
+
+
+def pytest_addoption(parser):
+    parser.addoption("--password", action="store", default=None, help="Cramer Connect password")
 import sys
 import types
 from enum import Enum
