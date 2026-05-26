@@ -11,8 +11,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api import (
     CramerAuth,
-    CramerConnectAuthError,
     CramerConnectApiError,
+    CramerConnectAuthError,
     CramerConnectClient,
     CramerDevice,
 )
@@ -57,20 +57,10 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         if guc_age < self._auth.guc_expires_in - 60:
             return
 
-        _LOGGER.debug("GUC token expiring, refreshing")
+        _LOGGER.debug("Token expiring, re-authenticating")
         try:
-            token, refresh, expires_in = await self._client.refresh_guc_token(
-                self._auth.fleet_token, self._auth.organization_id
+            self._auth = await self._client.authenticate(
+                self._username, self._password
             )
-            self._auth.guc_token = token
-            self._auth.guc_refresh_token = refresh
-            self._auth.guc_expires_in = expires_in
-            self._auth.fetched_at = datetime.now()
-        except CramerConnectAuthError:
-            _LOGGER.info("Token refresh failed, re-authenticating")
-            try:
-                self._auth = await self._client.authenticate(
-                    self._username, self._password
-                )
-            except CramerConnectAuthError as err:
-                raise ConfigEntryAuthFailed(str(err)) from err
+        except CramerConnectAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err

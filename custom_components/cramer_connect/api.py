@@ -40,6 +40,12 @@ class CramerDevice:
     state: str | None
     battery: int | None
     is_online: bool
+    # Scheduled next start — Unix epoch seconds; None means no schedule
+    next_start_ts: int | None = None
+    # Statistics from dp[48]
+    cutting_time_s: int | None = None
+    running_time_s: int | None = None
+    error_count: int | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -48,7 +54,12 @@ class CramerDevice:
 
     @property
     def is_mower(self) -> bool:
-        return self.product_code in ROBOTIC_MOWER_PRODUCT_CODES
+        # When a productCode is known, use it to decide.
+        if self.product_code:
+            return self.product_code in ROBOTIC_MOWER_PRODUCT_CODES
+        # xlink subscribe/devices never returns productCode; treat any device
+        # whose state has been populated by the device-state call as a mower.
+        return self.state is not None
 
 
 @dataclass
@@ -325,30 +336,34 @@ class CramerConnectClient:
 
         devices = self._parse_devices(data)
 
-        # Enrich each device with state/battery from the device-state endpoint
-        status_results = await asyncio.gather(
+        # Enrich each device with live state + statistics
+        enrichments = await asyncio.gather(
             *[self._get_xlink_device_state(auth, d) for d in devices],
             return_exceptions=True,
         )
-        for device, result in zip(devices, status_results):
+        for device, result in zip(devices, enrichments):
             if isinstance(result, Exception):
                 _LOGGER.debug("Could not fetch state for %s: %s", device.name, result)
                 continue
-            state, battery = result
-            if state is not None:
-                device.state = state
-            if battery is not None:
-                device.battery = battery
+            if not isinstance(result, dict):
+                continue
+            for key in ("state", "battery", "next_start_ts",
+                        "cutting_time_s", "running_time_s", "error_count"):
+                if result.get(key) is not None:
+                    setattr(device, key, result[key])
 
         return devices
 
     async def _get_xlink_device_state(
         self, auth: CramerAuth, device: CramerDevice
-    ) -> tuple[str | None, int | None]:
-        """Fetch state and battery from datapoint 32 of the device-state endpoint.
+    ) -> dict[str, Any]:
+        """Fetch live state + statistics from the xlink device-state endpoint.
 
-        Datapoint 32 value is a JSON string whose 'request' object contains
-        mower_main_state (int) and battery_status (int).
+        Returns a dict with keys: state, battery, next_start_ts,
+        cutting_time_s, running_time_s, error_count.  Missing values are None.
+
+        Datapoint 32 = live mower state (JSON string, 'request' object).
+        Datapoint 48 = usage statistics (JSON string, 'response' object).
         """
         import json as _json
 
@@ -363,36 +378,42 @@ class CramerConnectClient:
         }
         async with self._session.get(url, headers=headers) as resp:
             if resp.status != 200:
-                return None, None
+                return {}
             data = await resp.json()
 
         datapoints = data.get("datapoints") or {}
+        result: dict[str, Any] = {}
+
+        # --- dp[32]: live mower state ---
         dp32 = datapoints.get("32")
-        if not dp32:
-            return None, None
-
-        raw_val = dp32.get("value") if isinstance(dp32, dict) else None
-        if not isinstance(raw_val, str):
-            return None, None
-
-        try:
-            parsed = _json.loads(raw_val)
-        except _json.JSONDecodeError:
-            return None, None
-
-        request = parsed.get("request") or {}
-        raw_state = request.get("mower_main_state")
-        raw_battery = request.get("battery_status")
-
-        state = str(raw_state) if raw_state is not None else None
-        battery: int | None = None
-        if raw_battery is not None:
+        if isinstance(dp32, dict) and isinstance(dp32.get("value"), str):
             try:
-                battery = int(raw_battery)
-            except (ValueError, TypeError):
+                req = _json.loads(dp32["value"]).get("request") or {}
+                if req.get("mower_main_state") is not None:
+                    result["state"] = str(req["mower_main_state"])
+                if req.get("battery_status") is not None:
+                    result["battery"] = int(req["battery_status"])
+                ns = req.get("next_start")
+                if ns is not None and int(ns) != 0xFFFFFFFF:
+                    result["next_start_ts"] = int(ns)
+            except (ValueError, TypeError, KeyError):
                 pass
 
-        return state, battery
+        # --- dp[48]: usage statistics ---
+        dp48 = datapoints.get("48")
+        if isinstance(dp48, dict) and isinstance(dp48.get("value"), str):
+            try:
+                resp_obj = _json.loads(dp48["value"]).get("response") or {}
+                if resp_obj.get("cutting_time") is not None:
+                    result["cutting_time_s"] = int(resp_obj["cutting_time"])
+                if resp_obj.get("running_time") is not None:
+                    result["running_time_s"] = int(resp_obj["running_time"])
+                if resp_obj.get("no_of_fatal_error") is not None:
+                    result["error_count"] = int(resp_obj["no_of_fatal_error"])
+            except (ValueError, TypeError, KeyError):
+                pass
+
+        return result
 
     # ------------------------------------------------------------------
     # Shared helpers

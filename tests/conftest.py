@@ -24,13 +24,24 @@ def _module(name: str) -> types.ModuleType:
 _const = _module("homeassistant.const")
 _const.CONF_USERNAME = "username"
 _const.CONF_PASSWORD = "password"
+_const.PERCENTAGE = "%"
 
 
 class _Platform(str, Enum):
     SENSOR = "sensor"
+    BINARY_SENSOR = "binary_sensor"
 
 
 _const.Platform = _Platform
+
+
+class _UnitOfTime:
+    SECONDS = "s"
+    MINUTES = "min"
+    HOURS = "h"
+
+
+_const.UnitOfTime = _UnitOfTime
 
 # ---- homeassistant.exceptions ----------------------------------------------
 _exc = _module("homeassistant.exceptions")
@@ -83,9 +94,12 @@ _ent = _module("homeassistant.helpers.entity")
 _ent.DeviceInfo = dict
 
 _ucoord = _module("homeassistant.helpers.update_coordinator")
+def _ce_init(self, coordinator):
+    self.coordinator = coordinator
+
 _ucoord.CoordinatorEntity = type("CoordinatorEntity", (), {
-    "__init__": lambda self, coordinator: None,
-    "coordinator": property(lambda self: None),
+    "__init__": _ce_init,
+    "__class_getitem__": classmethod(lambda cls, item: cls),
 })
 _ucoord.DataUpdateCoordinator = type("DataUpdateCoordinator", (), {
     "__init_subclass__": classmethod(lambda cls, **kw: None),
@@ -96,12 +110,26 @@ _ucoord.UpdateFailed = type("UpdateFailed", (Exception,), {})
 # ---- homeassistant.components.sensor ---------------------------------------
 _sensor_mod = _module("homeassistant.components.sensor")
 _sensor_mod.SensorEntity = type("SensorEntity", (), {})
-_sensor_mod.SensorDeviceClass = type("SensorDeviceClass", (), {"BATTERY": "battery"})
-_sensor_mod.SensorStateClass = type("SensorStateClass", (), {"MEASUREMENT": "measurement"})
+_sensor_mod.SensorDeviceClass = type(
+    "SensorDeviceClass", (),
+    {"BATTERY": "battery", "DURATION": "duration", "TIMESTAMP": "timestamp"},
+)
+_sensor_mod.SensorStateClass = type(
+    "SensorStateClass", (),
+    {"MEASUREMENT": "measurement", "TOTAL_INCREASING": "total_increasing"},
+)
 _sensor_mod.SensorEntityDescription = type(
     "SensorEntityDescription",
     (),
     {"__init__": lambda self, **kw: self.__dict__.update(kw)},
+)
+
+# ---- homeassistant.components.binary_sensor --------------------------------
+_bs_mod = _module("homeassistant.components.binary_sensor")
+_bs_mod.BinarySensorEntity = type("BinarySensorEntity", (), {})
+_bs_mod.BinarySensorDeviceClass = type(
+    "BinarySensorDeviceClass", (),
+    {"CONNECTIVITY": "connectivity"},
 )
 
 # ---- homeassistant.data_entry_flow -----------------------------------------

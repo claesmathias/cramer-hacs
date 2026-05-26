@@ -51,6 +51,35 @@ GUC_DIRECT_OK = {
     "token_type": "Bearer",
 }
 
+import json as _json
+
+DP32_VALUE = _json.dumps({
+    "request": {
+        "mower_main_state": 4,
+        "battery_status": 78,
+        "next_start": 1800000000,
+        "source_for_next_start": 2,
+    },
+    "response": {"return_code": 0},
+})
+
+DP48_VALUE = _json.dumps({
+    "request": {"request_time": "2026-01-01T00:00:00Z"},
+    "response": {
+        "return_code": 0,
+        "cutting_time": 3600,
+        "running_time": 7200,
+        "no_of_fatal_error": 5,
+    },
+})
+
+DEVICE_STATE_OK = {
+    "datapoints": {
+        "32": {"report_time": "2026-05-26T12:00:00Z", "value": DP32_VALUE},
+        "48": {"report_time": "2026-03-01T00:00:00Z", "value": DP48_VALUE},
+    }
+}
+
 DEVICE_LIST_OK = [
     {
         "id": 12345,
@@ -61,6 +90,18 @@ DEVICE_LIST_OK = [
         "productCode": "RLM1",
         "state": 4,
         "battery": 78,
+        "is_online": True,
+    }
+]
+
+# xlink subscribe/devices returns no productCode, state, or battery
+XLINK_DEVICE_LIST_OK = [
+    {
+        "id": 825765938,
+        "product_id": "160fa8b69e2503e9160fa8b69e250601",
+        "name": "Nacho",
+        "sn": "215101235",
+        "mac": "323135313031323335",
         "is_online": True,
     }
 ]
@@ -97,6 +138,13 @@ def _client_with_posts(*responses) -> CramerConnectClient:
 def _client_with_get(response) -> CramerConnectClient:
     session = MagicMock()
     session.get = MagicMock(return_value=response)
+    return CramerConnectClient(session)
+
+
+def _client_with_gets(*responses) -> CramerConnectClient:
+    """Client whose session.get returns successive responses."""
+    session = MagicMock()
+    session.get = MagicMock(side_effect=list(responses))
     return CramerConnectClient(session)
 
 
@@ -343,6 +391,63 @@ class TestGetDevices:
         with pytest.raises(CramerConnectAuthError):
             await client.get_devices(consumer_auth)
 
+    async def test_xlink_devices_enriched_with_state_and_stats(self):
+        """After list call, device-state is fetched and fields populated."""
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),  # subscribe/devices
+            _make_response(200, DEVICE_STATE_OK),        # device-state
+        )
+        devices = await client.get_devices(consumer_auth)
+
+        assert len(devices) == 1
+        d = devices[0]
+        assert d.state == "4"
+        assert d.state_label == "mowing"
+        assert d.battery == 78
+        assert d.next_start_ts == 1800000000
+        assert d.cutting_time_s == 3600
+        assert d.running_time_s == 7200
+        assert d.error_count == 5
+        assert d.is_mower is True   # state is not None, no productCode → is_mower
+
+    async def test_xlink_no_schedule_next_start_is_none(self):
+        """next_start = 0xFFFFFFFF means no schedule → next_start_ts = None."""
+        import json as _j
+        dp32_no_sched = _j.dumps({
+            "request": {"mower_main_state": 7, "battery_status": 100,
+                        "next_start": 4294967295}
+        })
+        state_resp = {"datapoints": {"32": {"value": dp32_no_sched}}}
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, state_resp),
+        )
+        devices = await client.get_devices(consumer_auth)
+        assert devices[0].next_start_ts is None
+
+    async def test_xlink_device_state_failure_does_not_crash(self):
+        """If device-state returns 500, device list still comes back."""
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(500, {}),
+        )
+        devices = await client.get_devices(consumer_auth)
+        assert len(devices) == 1
+        assert devices[0].state is None
+        assert devices[0].battery is None
+
 
 # ---------------------------------------------------------------------------
 # CramerDevice helper properties
@@ -376,3 +481,20 @@ class TestCramerDevice:
 
     def test_other_product_is_not_mower(self):
         assert self._device("4", "BATTERY").is_mower is False
+
+    def test_no_product_code_but_has_state_is_mower(self):
+        """xlink devices have no productCode but state data marks them as mowers."""
+        d = CramerDevice(
+            device_id="1", product_id="p", name="Nacho",
+            serial_number="SN", mac="", product_code="",
+            state="2", battery=99, is_online=True,
+        )
+        assert d.is_mower is True
+
+    def test_no_product_code_no_state_is_not_mower(self):
+        d = CramerDevice(
+            device_id="1", product_id="p", name="Unknown",
+            serial_number="SN", mac="", product_code="",
+            state=None, battery=None, is_online=False,
+        )
+        assert d.is_mower is False

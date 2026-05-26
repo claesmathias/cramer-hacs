@@ -1,6 +1,8 @@
 """Sensor entities for Cramer Connect."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
@@ -8,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import PERCENTAGE, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -31,6 +33,34 @@ MOWER_SENSORS: tuple[SensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
         icon="mdi:battery",
+    ),
+    SensorEntityDescription(
+        key="next_start",
+        name="Next start",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        icon="mdi:clock-start",
+    ),
+    SensorEntityDescription(
+        key="cutting_time",
+        name="Total mowing time",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        icon="mdi:timer",
+    ),
+    SensorEntityDescription(
+        key="running_time",
+        name="Total running time",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        icon="mdi:timer-outline",
+    ),
+    SensorEntityDescription(
+        key="error_count",
+        name="Error count",
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:alert-circle",
     ),
 )
 
@@ -77,21 +107,48 @@ class CramerMowerSensor(CoordinatorEntity[CramerConnectCoordinator], SensorEntit
             identifiers={(DOMAIN, device.device_id)},
             name=device.name,
             manufacturer="Cramer",
-            model=device.product_code,
+            model=device.product_code or "Robotic Mower",
             serial_number=device.serial_number,
         )
 
     @property
     def available(self) -> bool:
-        return self._device_id in self.coordinator.data and self._device.is_online
+        if self._device_id not in self.coordinator.data:
+            return False
+        # Statistics are historical and always available; real-time ones need online
+        if self.entity_description.key in ("cutting_time", "running_time", "error_count"):
+            return True
+        return self._device.is_online
 
     @property
-    def native_value(self) -> str | int | None:
+    def native_value(self) -> str | int | float | datetime | None:
         device = self._device
-        if self.entity_description.key == "state":
+        key = self.entity_description.key
+
+        if key == "state":
             return device.state_label
-        if self.entity_description.key == "battery":
+
+        if key == "battery":
             return device.battery
+
+        if key == "next_start":
+            if device.next_start_ts is None:
+                return None
+            return datetime.fromtimestamp(device.next_start_ts, tz=timezone.utc)
+
+        if key == "cutting_time":
+            if device.cutting_time_s is None:
+                return None
+            return round(device.cutting_time_s / 3600, 1)
+
+        if key == "running_time":
+            if device.running_time_s is None:
+                return None
+            return round(device.running_time_s / 3600, 1)
+
+        if key == "error_count":
+            return device.error_count
+
         return None
 
     @property
