@@ -489,6 +489,34 @@ class CramerConnectClient:
 
         return result
 
+    async def send_command(
+        self,
+        auth: CramerAuth,
+        product_id: str,
+        device_id: str,
+        payload: dict,
+    ) -> None:
+        """Write datapoints to a device via the xlink dp-send endpoint.
+
+        payload example: {"96": {"request": {"override_timer": 1}}}
+        The correct endpoint path was confirmed from xlink API traffic capture.
+        """
+        url = f"{XLINK_URL}/v2/product/{product_id}/dp-send/{device_id}"
+        headers = {
+            **_base_headers(),
+            "Access-Token": auth.xlink_token,
+            "Xlink-Access-Token": auth.xlink_token,
+            "Xlink-User-Id": auth.xlink_user_id,
+        }
+        async with self._session.post(url, json=payload, headers=headers) as resp:
+            if resp.status == 401:
+                raise CramerConnectAuthError("Xlink token expired or invalid")
+            if resp.status not in (200, 204):
+                text = await resp.text()
+                raise CramerConnectApiError(
+                    f"send_command failed ({resp.status}): {text}"
+                )
+
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------

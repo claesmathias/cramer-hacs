@@ -31,6 +31,8 @@ _const.PERCENTAGE = "%"
 class _Platform(str, Enum):
     SENSOR = "sensor"
     BINARY_SENSOR = "binary_sensor"
+    DEVICE_TRACKER = "device_tracker"
+    BUTTON = "button"
 
 
 _const.Platform = _Platform
@@ -145,6 +147,25 @@ _bs_mod.BinarySensorDeviceClass = type(
     "BinarySensorDeviceClass", (),
     {"CONNECTIVITY": "connectivity", "UPDATE": "update"},
 )
+
+# ---- homeassistant.components.device_tracker --------------------------------
+_dt_mod = _module("homeassistant.components.device_tracker")
+_dt_mod.TrackerEntity = type("TrackerEntity", (), {})
+
+
+class _SourceType(str):
+    pass
+
+
+_dt_mod.SourceType = type(
+    "SourceType",
+    (),
+    {"GPS": _SourceType("gps"), "ROUTER": _SourceType("router")},
+)
+
+# ---- homeassistant.components.button ----------------------------------------
+_btn_mod = _module("homeassistant.components.button")
+_btn_mod.ButtonEntity = type("ButtonEntity", (), {})
 
 # ---- homeassistant.data_entry_flow -----------------------------------------
 _flow = _module("homeassistant.data_entry_flow")
