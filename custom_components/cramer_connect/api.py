@@ -501,7 +501,7 @@ class CramerConnectClient:
         payload example: {"96": {"request": {"override_timer": 1}}}
         The correct endpoint path was confirmed from xlink API traffic capture.
         """
-        url = f"{XLINK_URL}/v2/product/{product_id}/dp-send/{device_id}"
+        url = f"{XLINK_URL}/v2/product/{product_id}/dp-write/{device_id}"
         headers = {
             **_base_headers(),
             "Access-Token": auth.xlink_token,

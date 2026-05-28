@@ -126,3 +126,65 @@ class TestLiveLogin:
                             print(f"  dp[{dp_key}] = {value!r}")
                     else:
                         print(f"  dp[{dp_key}] = {value!r}")
+
+    async def test_probe_write_endpoint(self, client, username, password):
+        """Probe candidate write endpoint paths to find the correct one.
+
+        This test sends a harmless empty payload to several candidate URLs
+        and prints the HTTP status for each. A 2xx or 4xx (not 404) means
+        the path exists; 404 means it doesn't.
+        """
+        import aiohttp as _aio
+        from custom_components.cramer_connect.const import (
+            XLINK_URL, APP_APPLICATION_KEY, APP_BRAND, APP_NAME,
+        )
+
+        auth = await client.authenticate(username, password)
+        if auth.is_fleet_user:
+            pytest.skip("write endpoint probe only for xlink (consumer) accounts")
+
+        async with _aio.ClientSession() as raw_session:
+            headers = {
+                "ApplicationKey": APP_APPLICATION_KEY,
+                "Brand": APP_BRAND,
+                "App-Name": APP_NAME,
+                "Language": "en",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Access-Token": auth.xlink_token,
+                "Xlink-Access-Token": auth.xlink_token,
+                "Xlink-User-Id": auth.xlink_user_id,
+            }
+
+            # Get a real device_id / product_id
+            url = f"{XLINK_URL}/v2/user/{auth.xlink_user_id}/subscribe/devices"
+            async with raw_session.get(url, headers=headers) as resp:
+                devices_raw = await resp.json()
+
+            if not devices_raw:
+                pytest.skip("No devices found")
+
+            item = devices_raw[0]
+            product_id = item.get("product_id", "")
+            device_id = str(item.get("id", ""))
+            print(f"\nProbing write endpoints for device {device_id} (product {product_id})")
+
+            # Harmless read-only payload — we're just checking the path exists
+            probe_payload = {}
+            candidates = [
+                ("POST", f"{XLINK_URL}/v2/product/{product_id}/dp-write/{device_id}"),
+                ("POST", f"{XLINK_URL}/v2/product/{product_id}/dp-send/{device_id}"),
+                ("PUT",  f"{XLINK_URL}/v2/product/{product_id}/dp-write/{device_id}"),
+                ("POST", f"{XLINK_URL}/v2/product/{product_id}/device/{device_id}/ctrl"),
+                ("POST", f"{XLINK_URL}/v2/product/{product_id}/control/{device_id}"),
+                ("PUT",  f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"),
+                ("POST", f"{XLINK_URL}/v2/user/{auth.xlink_user_id}/device/{device_id}/dp-write"),
+            ]
+
+            for method, probe_url in candidates:
+                async with raw_session.request(
+                    method, probe_url, json=probe_payload, headers=headers
+                ) as resp:
+                    body = await resp.text()
+                    indicator = "✓ PATH EXISTS" if resp.status != 404 else "✗ 404"
+                    print(f"  {indicator}  {method} {probe_url.replace(XLINK_URL, '')}  → {resp.status}: {body[:120]}")
