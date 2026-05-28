@@ -41,6 +41,14 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         self._username = username
         self._password = password
 
+    @property
+    def client(self) -> CramerConnectClient:
+        return self._client
+
+    @property
+    def auth(self) -> CramerAuth:
+        return self._auth
+
     async def _async_update_data(self) -> dict[str, CramerDevice]:
         await self._ensure_auth()
         try:
