@@ -198,8 +198,8 @@ class CramerConnectClient:
         async with self._session.post(url, json=payload, headers=_base_headers()) as resp:
             if resp.status in (400, 401, 403):
                 text = await resp.text()
-                _LOGGER.debug("Fleet login %s: %s", resp.status, text)
-                raise CramerConnectAuthError("Invalid credentials")
+                _LOGGER.warning("Fleet login rejected (HTTP %s): %s", resp.status, text)
+                raise CramerConnectAuthError(f"Fleet login rejected (HTTP {resp.status})")
             if resp.status != 200:
                 text = await resp.text()
                 raise CramerConnectApiError(
@@ -271,8 +271,8 @@ class CramerConnectClient:
         async with self._session.post(url, json=payload, headers=_base_headers()) as resp:
             if resp.status in (400, 401, 403):
                 text = await resp.text()
-                _LOGGER.debug("Xlink login %s: %s", resp.status, text)
-                raise CramerConnectAuthError("Invalid credentials")
+                _LOGGER.warning("Xlink login rejected (HTTP %s): %s", resp.status, text)
+                raise CramerConnectAuthError(f"Xlink login rejected (HTTP {resp.status})")
             if resp.status != 200:
                 text = await resp.text()
                 raise CramerConnectApiError(
@@ -315,8 +315,8 @@ class CramerConnectClient:
             async with self._session.post(url, data=form, headers=headers) as resp:
                 if resp.status in (400, 401, 403):
                     text = await resp.text()
-                    _LOGGER.debug("GUC direct login %s: %s", resp.status, text)
-                    raise CramerConnectAuthError("Invalid credentials (GUC)")
+                    _LOGGER.warning("GUC direct login rejected (HTTP %s): %s", resp.status, text)
+                    raise CramerConnectAuthError(f"GUC login rejected (HTTP {resp.status})")
                 if resp.status != 200:
                     text = await resp.text()
                     raise CramerConnectApiError(
