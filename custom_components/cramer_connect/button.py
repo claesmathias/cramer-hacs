@@ -10,7 +10,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import CramerDevice
+from .api import CramerDevice, CramerConnectTokenExpiredError
 from .const import DOMAIN
 from .coordinator import CramerConnectCoordinator
 
@@ -77,12 +77,22 @@ class _CramerMowerButton(CoordinatorEntity[CramerConnectCoordinator], ButtonEnti
 
     async def _send(self, payload: dict) -> None:
         device = self._device
-        await self.coordinator.client.send_command(
-            self.coordinator.auth,
-            device.product_id,
-            device.device_id,
-            payload,
-        )
+        try:
+            await self.coordinator.client.send_command(
+                self.coordinator.auth,
+                device.product_id,
+                device.device_id,
+                payload,
+            )
+        except CramerConnectTokenExpiredError:
+            _LOGGER.debug("Authorize token expired, re-authenticating and retrying")
+            await self.coordinator.force_reauth()
+            await self.coordinator.client.send_command(
+                self.coordinator.auth,
+                device.product_id,
+                device.device_id,
+                payload,
+            )
 
 
 class CramerStartButton(_CramerMowerButton):

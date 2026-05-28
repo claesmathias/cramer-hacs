@@ -15,6 +15,7 @@ from .api import (
     CramerConnectAuthError,
     CramerConnectClient,
     CramerDevice,
+    CramerConnectTokenExpiredError,
 )
 from .const import DOMAIN, SCAN_INTERVAL_SECONDS
 
@@ -59,6 +60,16 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
             raise UpdateFailed(str(err)) from err
 
         return {d.device_id: d for d in devices}
+
+    async def force_reauth(self) -> None:
+        """Re-authenticate unconditionally and update stored tokens."""
+        _LOGGER.debug("Forcing re-authentication (token expired)")
+        try:
+            self._auth = await self._client.authenticate(
+                self._username, self._password
+            )
+        except CramerConnectAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
 
     async def _ensure_auth(self) -> None:
         guc_age = (datetime.now() - self._auth.fetched_at).total_seconds()

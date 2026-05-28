@@ -96,6 +96,10 @@ class CramerConnectAuthError(CramerConnectApiError):
     pass
 
 
+class CramerConnectTokenExpiredError(CramerConnectAuthError):
+    pass
+
+
 def _base_headers() -> dict[str, str]:
     """Headers the app sends on every request."""
     return {
@@ -521,10 +525,17 @@ class CramerConnectClient:
             }
         }
         async with self._session.put(url, json=payload, headers=headers) as resp:
-            if resp.status == 401:
-                raise CramerConnectAuthError("Xlink token expired or invalid")
             if resp.status not in (200, 204):
                 text = await resp.text()
+                try:
+                    import json as _json2
+                    code = _json2.loads(text).get("error", {}).get("code")
+                    if code == 4031021:
+                        raise CramerConnectTokenExpiredError("Xlink authorize token expired")
+                    if code in (4031001, 4031002):
+                        raise CramerConnectAuthError("Xlink token invalid or expired")
+                except (ValueError, AttributeError):
+                    pass
                 raise CramerConnectApiError(
                     f"send_command failed ({resp.status}): {text}"
                 )
