@@ -169,22 +169,21 @@ class TestLiveLogin:
             device_id = str(item.get("id", ""))
             print(f"\nProbing write endpoints for device {device_id} (product {product_id})")
 
-            # Harmless read-only payload — we're just checking the path exists
-            probe_payload = {}
-            candidates = [
-                ("POST", f"{XLINK_URL}/v2/product/{product_id}/dp-write/{device_id}"),
-                ("POST", f"{XLINK_URL}/v2/product/{product_id}/dp-send/{device_id}"),
-                ("PUT",  f"{XLINK_URL}/v2/product/{product_id}/dp-write/{device_id}"),
-                ("POST", f"{XLINK_URL}/v2/product/{product_id}/device/{device_id}/ctrl"),
-                ("POST", f"{XLINK_URL}/v2/product/{product_id}/control/{device_id}"),
-                ("PUT",  f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"),
-                ("POST", f"{XLINK_URL}/v2/user/{auth.xlink_user_id}/device/{device_id}/dp-write"),
+            write_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
+            print(f"\nTrying PUT {write_url.replace(XLINK_URL, '')} with auth variants:")
+
+            authorize_token = auth.xlink_authorize
+            print(f"  xlink_authorize = {authorize_token!r}")
+
+            auth_variants = [
+                ("xlink token only",            {**headers}),
+                ("xlink token + Authorize hdr", {**headers, "Authorize": authorize_token}),
+                ("GUC Bearer only",             {**{k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token")}, "Authorization": f"Bearer {auth.guc_token}"}),
+                ("xlink + GUC Bearer",          {**headers, "Authorize": authorize_token, "Authorization": f"Bearer {auth.guc_token}"}),
             ]
 
-            for method, probe_url in candidates:
-                async with raw_session.request(
-                    method, probe_url, json=probe_payload, headers=headers
-                ) as resp:
+            for label, h in auth_variants:
+                async with raw_session.put(write_url, json={}, headers=h) as resp:
                     body = await resp.text()
-                    indicator = "✓ PATH EXISTS" if resp.status != 404 else "✗ 404"
-                    print(f"  {indicator}  {method} {probe_url.replace(XLINK_URL, '')}  → {resp.status}: {body[:120]}")
+                    indicator = "✓ ACCEPTED" if resp.status in (200, 204) else ("✗ AUTH" if resp.status == 403 else f"✗ {resp.status}")
+                    print(f"  {indicator}  [{label}]  → {resp.status}: {body[:120]}")

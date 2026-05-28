@@ -84,6 +84,7 @@ class CramerAuth:
     is_fleet_user: bool = True
     xlink_token: str = ""
     xlink_user_id: str = ""
+    xlink_authorize: str = ""
     fetched_at: datetime = field(default_factory=datetime.now)
 
 
@@ -129,7 +130,7 @@ class CramerConnectClient:
                 is_fleet_user=True,
             )
         else:
-            xlink_token, xlink_user_id = await self._xlink_login(username, password)
+            xlink_token, xlink_user_id, xlink_authorize = await self._xlink_login(username, password)
             guc_token, guc_refresh, guc_expires = await self._guc_direct_login(
                 username, password
             )
@@ -142,6 +143,7 @@ class CramerConnectClient:
                 is_fleet_user=False,
                 xlink_token=xlink_token,
                 xlink_user_id=xlink_user_id,
+                xlink_authorize=xlink_authorize,
             )
 
     async def refresh_guc_token(
@@ -257,8 +259,8 @@ class CramerConnectClient:
     # Consumer (non-fleet / xlink) path
     # ------------------------------------------------------------------
 
-    async def _xlink_login(self, username: str, password: str) -> tuple[str, str]:
-        """Returns (xlink_access_token, xlink_user_id)."""
+    async def _xlink_login(self, username: str, password: str) -> tuple[str, str, str]:
+        """Returns (xlink_access_token, xlink_user_id, authorize)."""
         url = f"{XLINK_URL}/v2/user_auth"
         payload = {
             "corp_id": XLINK_CORP_ID,
@@ -282,9 +284,10 @@ class CramerConnectClient:
 
         token = data.get("access_token")
         user_id = str(data.get("user_id", ""))
+        authorize = str(data.get("authorize", ""))
         if not token:
             raise CramerConnectAuthError("No access_token in xlink login response")
-        return token, user_id
+        return token, user_id, authorize
 
     async def _guc_direct_login(
         self, username: str, password: str
@@ -494,21 +497,30 @@ class CramerConnectClient:
         auth: CramerAuth,
         product_id: str,
         device_id: str,
-        payload: dict,
+        command: dict,
     ) -> None:
-        """Write datapoints to a device via the xlink dp-send endpoint.
+        """Write datapoints to a device via PUT /device-state.
 
-        payload example: {"96": {"request": {"override_timer": 1}}}
-        The correct endpoint path was confirmed from xlink API traffic capture.
+        command format: {"96": {"request": {"override_timer": 1}}}
+        Wrapped automatically into {"datapoints": {"96": {"value": "<json>"}}}
         """
-        url = f"{XLINK_URL}/v2/product/{product_id}/dp-write/{device_id}"
+        import json as _json
+
+        url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
         headers = {
             **_base_headers(),
             "Access-Token": auth.xlink_token,
             "Xlink-Access-Token": auth.xlink_token,
             "Xlink-User-Id": auth.xlink_user_id,
+            "Authorize": auth.xlink_authorize,
         }
-        async with self._session.post(url, json=payload, headers=headers) as resp:
+        payload = {
+            "datapoints": {
+                str(dp_key): {"value": _json.dumps(dp_val)}
+                for dp_key, dp_val in command.items()
+            }
+        }
+        async with self._session.put(url, json=payload, headers=headers) as resp:
             if resp.status == 401:
                 raise CramerConnectAuthError("Xlink token expired or invalid")
             if resp.status not in (200, 204):

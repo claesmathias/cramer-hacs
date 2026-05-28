@@ -308,6 +308,7 @@ class TestAuthenticateConsumer:
         assert auth.is_fleet_user is False
         assert auth.xlink_token == "xlink-token-abc"
         assert auth.xlink_user_id == "user-123"
+        assert auth.xlink_authorize == "auth-string"
         assert auth.guc_token == "guc-direct-token-xyz"
         assert auth.guc_refresh_token == "guc-direct-refresh-xyz"
         assert auth.guc_expires_in == 3600
