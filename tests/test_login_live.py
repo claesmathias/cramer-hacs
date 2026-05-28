@@ -169,21 +169,48 @@ class TestLiveLogin:
             device_id = str(item.get("id", ""))
             print(f"\nProbing write endpoints for device {device_id} (product {product_id})")
 
-            write_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
-            print(f"\nTrying PUT {write_url.replace(XLINK_URL, '')} with auth variants:")
+            from custom_components.cramer_connect.const import GUC_URL
 
             authorize_token = auth.xlink_authorize
             print(f"  xlink_authorize = {authorize_token!r}")
 
-            auth_variants = [
-                ("xlink token only",            {**headers}),
-                ("xlink token + Authorize hdr", {**headers, "Authorize": authorize_token}),
-                ("GUC Bearer only",             {**{k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token")}, "Authorization": f"Bearer {auth.guc_token}"}),
-                ("xlink + GUC Bearer",          {**headers, "Authorize": authorize_token, "Authorization": f"Bearer {auth.guc_token}"}),
-            ]
+            # --- Part 1: xlink PUT /device-state with more auth combos ---
+            write_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
+            print(f"\n[A] xlink PUT {write_url.replace(XLINK_URL, '')}:")
 
-            for label, h in auth_variants:
+            base_no_token = {k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token")}
+            xlink_auth_variants = [
+                ("authorize as Access-Token",   {**base_no_token, "Access-Token": authorize_token, "Xlink-Access-Token": authorize_token}),
+                ("xlink + Authorize hdr",       {**headers, "Authorize": authorize_token}),
+                ("GUC Bearer only",             {**base_no_token, "Authorization": f"Bearer {auth.guc_token}"}),
+                ("xlink + GUC Bearer",          {**headers, "Authorization": f"Bearer {auth.guc_token}"}),
+            ]
+            for label, h in xlink_auth_variants:
                 async with raw_session.put(write_url, json={}, headers=h) as resp:
                     body = await resp.text()
-                    indicator = "✓ ACCEPTED" if resp.status in (200, 204) else ("✗ AUTH" if resp.status == 403 else f"✗ {resp.status}")
-                    print(f"  {indicator}  [{label}]  → {resp.status}: {body[:120]}")
+                    ok = resp.status in (200, 204)
+                    print(f"  {'✓' if ok else '✗'}  [{label}]  → {resp.status}: {body[:100]}")
+
+            # --- Part 2: GUC API write endpoint candidates ---
+            guc_headers = {
+                **{k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token", "Xlink-User-Id")},
+                "Authorization": f"Bearer {auth.guc_token}",
+            }
+            guc_candidates = [
+                ("POST", f"{GUC_URL}/api/v1/device/{device_id}/command"),
+                ("POST", f"{GUC_URL}/api/v1/product/{product_id}/device/{device_id}/command"),
+                ("POST", f"{GUC_URL}/api/iot/device/{device_id}/dp-write"),
+                ("POST", f"{GUC_URL}/api/iot/product/{product_id}/device/{device_id}/dp-write"),
+                ("PUT",  f"{GUC_URL}/api/iot/product/{product_id}/device/{device_id}/state"),
+                ("POST", f"{GUC_URL}/api/device/{device_id}/control"),
+                ("POST", f"{GUC_URL}/api/product/{product_id}/device/{device_id}/ctrl"),
+            ]
+            print(f"\n[B] GUC API ({GUC_URL}) write candidates:")
+            for method, guc_url in guc_candidates:
+                try:
+                    async with raw_session.request(method, guc_url, json={}, headers=guc_headers) as resp:
+                        body = await resp.text()
+                        ok = resp.status not in (404, 405)
+                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(resp.status)}  {method} {guc_url.replace(GUC_URL, '')}  → {resp.status}: {body[:100]}")
+                except Exception as e:
+                    print(f"  ✗ ERROR  {method} {guc_url.replace(GUC_URL, '')}  → {e}")
