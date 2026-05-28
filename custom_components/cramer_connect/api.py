@@ -509,10 +509,10 @@ class CramerConnectClient:
         url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
         headers = {
             **_base_headers(),
-            "Access-Token": auth.xlink_token,
-            "Xlink-Access-Token": auth.xlink_token,
+            "Access-Token": auth.xlink_authorize,
+            "Xlink-Access-Token": auth.xlink_authorize,
             "Xlink-User-Id": auth.xlink_user_id,
-            "Authorize": auth.xlink_authorize,
+            "Authorize": auth.xlink_token,
         }
         payload = {
             "datapoints": {
