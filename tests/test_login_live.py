@@ -175,25 +175,29 @@ class TestLiveLogin:
 
             from custom_components.cramer_connect.const import GUC_URL
 
-            authorize_token = auth.xlink_authorize
-            print(f"  xlink_authorize = {authorize_token!r}")
-
-            # --- Part 1: xlink PUT /device-state with more auth combos ---
-            write_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
-            print(f"\n[A] xlink PUT {write_url.replace(XLINK_URL, '')}:")
+            # Get per-device authorize_code
+            device_authorize_code = str(item.get("authorize_code", ""))
+            user_authorize = auth.xlink_authorize
+            print(f"  xlink_authorize (user) = {user_authorize!r}")
+            print(f"  authorize_code (device) = {device_authorize_code!r}")
 
             base_no_token = {k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token")}
-            xlink_auth_variants = [
-                ("authorize as Access-Token",   {**base_no_token, "Access-Token": authorize_token, "Xlink-Access-Token": authorize_token}),
-                ("xlink + Authorize hdr",       {**headers, "Authorize": authorize_token}),
-                ("GUC Bearer only",             {**base_no_token, "Authorization": f"Bearer {auth.guc_token}"}),
-                ("xlink + GUC Bearer",          {**headers, "Authorization": f"Bearer {auth.guc_token}"}),
+
+            # --- Part 1: xlink PUT /device-state with all auth combos ---
+            write_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
+            print(f"\n[A] xlink PUT {write_url.replace(XLINK_URL, '')}:")
+            xlink_variants = [
+                ("user token only",                    {**headers}),
+                ("user token + Authorize: dev_code",   {**headers, "Authorize": device_authorize_code}),
+                ("dev_code as Access-Token",           {**base_no_token, "Access-Token": device_authorize_code, "Xlink-Access-Token": device_authorize_code}),
+                ("dev_code as Access + user Authorize",{**base_no_token, "Access-Token": device_authorize_code, "Xlink-Access-Token": device_authorize_code, "Authorize": auth.xlink_token}),
+                ("GUC Bearer + user token",            {**headers, "Authorization": f"Bearer {auth.guc_token}"}),
             ]
-            for label, h in xlink_auth_variants:
+            for label, h in xlink_variants:
                 async with raw_session.put(write_url, json={}, headers=h) as resp:
                     body = await resp.text()
                     ok = resp.status in (200, 204)
-                    print(f"  {'✓' if ok else '✗'}  [{label}]  → {resp.status}: {body[:100]}")
+                    print(f"  {'✓ OK' if ok else '✗   '}  [{label}]  → {resp.status}: {body[:100]}")
 
             # --- Part 2: GUC API write endpoint candidates ---
             guc_headers = {
@@ -208,6 +212,8 @@ class TestLiveLogin:
                 ("PUT",  f"{GUC_URL}/api/iot/product/{product_id}/device/{device_id}/state"),
                 ("POST", f"{GUC_URL}/api/device/{device_id}/control"),
                 ("POST", f"{GUC_URL}/api/product/{product_id}/device/{device_id}/ctrl"),
+                ("POST", f"{GUC_URL}/api/product/{product_id}/dp-write/{device_id}"),
+                ("POST", f"{GUC_URL}/api/xlink/product/{product_id}/device/{device_id}/ctrl"),
             ]
             print(f"\n[B] GUC API ({GUC_URL}) write candidates:")
             for method, guc_url in guc_candidates:
@@ -215,6 +221,6 @@ class TestLiveLogin:
                     async with raw_session.request(method, guc_url, json={}, headers=guc_headers) as resp:
                         body = await resp.text()
                         ok = resp.status not in (404, 405)
-                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(resp.status)}  {method} {guc_url.replace(GUC_URL, '')}  → {resp.status}: {body[:100]}")
+                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(resp.status)+'       '}  {method} {guc_url.replace(GUC_URL, '')}  → {resp.status}: {body[:100]}")
                 except Exception as e:
                     print(f"  ✗ ERROR  {method} {guc_url.replace(GUC_URL, '')}  → {e}")
