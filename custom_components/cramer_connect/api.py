@@ -579,7 +579,7 @@ class CramerConnectClient:
                     state=str(raw_state) if raw_state is not None else None,
                     battery=battery,
                     is_online=bool(item.get("is_online", False)),
-                    device_authorize=str(item.get("authorize", "")),
+                    device_authorize=str(item.get("authorize_code", "")),
                     raw=item,
                 )
             )
