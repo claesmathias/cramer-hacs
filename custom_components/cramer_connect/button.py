@@ -83,6 +83,7 @@ class _CramerMowerButton(CoordinatorEntity[CramerConnectCoordinator], ButtonEnti
                 device.product_id,
                 device.device_id,
                 payload,
+                device_authorize=device.device_authorize,
             )
         except CramerConnectTokenExpiredError:
             _LOGGER.debug("Authorize token expired, re-authenticating and retrying")
@@ -92,6 +93,7 @@ class _CramerMowerButton(CoordinatorEntity[CramerConnectCoordinator], ButtonEnti
                 device.product_id,
                 device.device_id,
                 payload,
+                device_authorize=device.device_authorize,
             )
 
 

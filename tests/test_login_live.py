@@ -106,6 +106,10 @@ class TestLiveLogin:
                 device_id = str(item.get("id", ""))
                 name = item.get("name", "unknown")
                 print(f"\n=== {name} (product_id={product_id}, device_id={device_id}) ===")
+                print("  Raw device fields:")
+                for k, v in item.items():
+                    if k not in ("product_id", "id", "name"):
+                        print(f"    {k}: {v!r}")
 
                 state_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
                 async with raw_session.get(state_url, headers=headers) as sresp:

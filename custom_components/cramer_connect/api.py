@@ -57,6 +57,8 @@ class CramerDevice:
     sw_update_available: bool | None = None
     # Hardware model from dp[21]
     mower_model: str | None = None
+    # Per-device xlink authorize code (from subscribe/devices response)
+    device_authorize: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -502,19 +504,24 @@ class CramerConnectClient:
         product_id: str,
         device_id: str,
         command: dict,
+        device_authorize: str = "",
     ) -> None:
         """Write datapoints to a device via PUT /device-state.
 
         command format: {"96": {"request": {"override_timer": 1}}}
         Wrapped automatically into {"datapoints": {"96": {"value": "<json>"}}}
+        device_authorize: per-device authorize code from subscribe/devices response.
         """
         import json as _json
+
+        # Prefer per-device authorize over user-level xlink_authorize
+        write_token = device_authorize or auth.xlink_authorize
 
         url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
         headers = {
             **_base_headers(),
-            "Access-Token": auth.xlink_authorize,
-            "Xlink-Access-Token": auth.xlink_authorize,
+            "Access-Token": write_token,
+            "Xlink-Access-Token": write_token,
             "Xlink-User-Id": auth.xlink_user_id,
             "Authorize": auth.xlink_token,
         }
@@ -572,6 +579,7 @@ class CramerConnectClient:
                     state=str(raw_state) if raw_state is not None else None,
                     battery=battery,
                     is_online=bool(item.get("is_online", False)),
+                    device_authorize=str(item.get("authorize", "")),
                     raw=item,
                 )
             )
