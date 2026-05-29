@@ -183,6 +183,18 @@ class TestLiveLogin:
 
             base_no_token = {k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token")}
 
+            # --- Part 0: NEW - app_datapoint_value endpoint (from APK) ---
+            app_dp_url = f"{XLINK_URL}/v2/product/{product_id}/app_datapoint_value"
+            app_dp_payload = {
+                "device_id": int(device_id),
+                "datapoints": {"96": {"value": '{"request":{"override_timer":1}}'}},
+            }
+            print(f"\n[0] app_datapoint_value POST (APK-discovered endpoint):")
+            async with raw_session.post(app_dp_url, json=app_dp_payload, headers=headers) as resp:
+                body = await resp.text()
+                ok = resp.status in (200, 201, 204)
+                print(f"  {'✓ OK' if ok else '✗   '}  → {resp.status}: {body[:200]}")
+
             # --- Part 1: xlink PUT /device-state with all auth combos ---
             write_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
             print(f"\n[A] xlink PUT {write_url.replace(XLINK_URL, '')}:")

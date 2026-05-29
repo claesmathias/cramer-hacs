@@ -514,24 +514,21 @@ class CramerConnectClient:
         """
         import json as _json
 
-        # Prefer per-device authorize over user-level xlink_authorize
-        write_token = device_authorize or auth.xlink_authorize
-
-        url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
+        url = f"{XLINK_URL}/v2/product/{product_id}/app_datapoint_value"
         headers = {
             **_base_headers(),
-            "Access-Token": write_token,
-            "Xlink-Access-Token": write_token,
+            "Access-Token": auth.xlink_token,
+            "Xlink-Access-Token": auth.xlink_token,
             "Xlink-User-Id": auth.xlink_user_id,
-            "Authorize": auth.xlink_token,
         }
         payload = {
+            "device_id": int(device_id),
             "datapoints": {
                 str(dp_key): {"value": _json.dumps(dp_val)}
                 for dp_key, dp_val in command.items()
-            }
+            },
         }
-        async with self._session.put(url, json=payload, headers=headers) as resp:
+        async with self._session.post(url, json=payload, headers=headers) as resp:
             if resp.status not in (200, 204):
                 text = await resp.text()
                 try:
