@@ -1,7 +1,7 @@
 {
   "domain": "cramer_connect",
   "name": "Cramer Connect",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "documentation": "https://github.com/claesmathias/cramer-hacs",
   "issue_tracker": "https://github.com/claesmathias/cramer-hacs/issues",
   "requirements": [],

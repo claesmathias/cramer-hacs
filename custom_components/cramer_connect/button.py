@@ -88,12 +88,14 @@ class _CramerMowerButton(CoordinatorEntity[CramerConnectCoordinator], ButtonEnti
         except CramerConnectTokenExpiredError:
             _LOGGER.debug("Authorize token expired, re-authenticating and retrying")
             await self.coordinator.force_reauth()
+            # After re-auth, re-fetch device to get a fresh device_authorize
+            fresh_device = self.coordinator.data.get(self._device_id, device)
             await self.coordinator.client.send_command(
                 self.coordinator.auth,
-                device.product_id,
-                device.device_id,
+                fresh_device.product_id,
+                fresh_device.device_id,
                 payload,
-                device_authorize=device.device_authorize,
+                device_authorize=fresh_device.device_authorize,
             )
 
 
