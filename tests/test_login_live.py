@@ -220,7 +220,42 @@ class TestLiveLogin:
                 try:
                     async with raw_session.request(method, guc_url, json={}, headers=guc_headers) as resp:
                         body = await resp.text()
-                        ok = resp.status not in (404, 405)
-                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(resp.status)+'       '}  {method} {guc_url.replace(GUC_URL, '')}  → {resp.status}: {body[:100]}")
+                        ok = resp.status not in (404, 405, 503)
+                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(resp.status)+'       '}  {method} {guc_url.replace(GUC_URL, '')}  → {resp.status}: {body[:80]}")
                 except Exception as e:
                     print(f"  ✗ ERROR  {method} {guc_url.replace(GUC_URL, '')}  → {e}")
+
+            # --- Part 3: Fleet API with GUC bearer (consumer path) ---
+            from custom_components.cramer_connect.const import FLEET_API_URL
+            fleet_headers = {
+                **{k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token", "Xlink-User-Id")},
+                "Authorization": f"Bearer {auth.guc_token}",
+            }
+            fleet_candidates = [
+                ("POST", f"{FLEET_API_URL}/api/devices/{device_id}/command"),
+                ("POST", f"{FLEET_API_URL}/api/devices/command/{product_id}/{device_id}"),
+                ("POST", f"{FLEET_API_URL}/api/device/{device_id}/control"),
+                ("PUT",  f"{FLEET_API_URL}/api/devices/{device_id}/status"),
+                ("POST", f"{FLEET_API_URL}/api/command/{device_id}"),
+            ]
+            print(f"\n[C] Fleet API ({FLEET_API_URL}) with GUC bearer:")
+            for method, furl in fleet_candidates:
+                try:
+                    async with raw_session.request(method, furl, json={}, headers=fleet_headers) as resp:
+                        body = await resp.text()
+                        ok = resp.status not in (404, 405, 503)
+                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(resp.status)+'       '}  {method} {furl.replace(FLEET_API_URL,'')}  → {resp.status}: {body[:80]}")
+                except Exception as e:
+                    print(f"  ✗ ERROR  {furl.replace(FLEET_API_URL,'')}  → {e}")
+
+            # --- Part 4: GUC API with xlink token instead of GUC bearer ---
+            xlink_guc_headers = {**guc_headers, "Access-Token": auth.xlink_token}
+            print(f"\n[D] GUC API with xlink Access-Token (top 3 paths):")
+            for method, guc_url in guc_candidates[:3]:
+                try:
+                    async with raw_session.request(method, guc_url, json={}, headers=xlink_guc_headers) as resp:
+                        body = await resp.text()
+                        ok = resp.status not in (404, 405, 503)
+                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(resp.status)+'       '}  {method} {guc_url.replace(GUC_URL,'')}  → {resp.status}: {body[:80]}")
+                except Exception as e:
+                    print(f"  ✗ ERROR  → {e}")
