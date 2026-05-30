@@ -350,6 +350,33 @@ class TestLiveLogin:
                 except _asyncio.TimeoutError:
                     print(f"  (no server messages in 5 s)")
 
+            # --- Part 0i: idds.globetools.systems (IotDDSApi scope in GUC token) ---
+            serial_number = str(item.get("sn", ""))
+            mac = str(item.get("mac", ""))
+            idds_base = "https://idds.globetools.systems"
+            idds_h = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
+            idds_candidates = [
+                ("GET",  f"{idds_base}/api/vehicle/{serial_number}"),
+                ("GET",  f"{idds_base}/api/vehicle/mac/{mac}"),
+                ("POST", f"{idds_base}/api/vehicle/{serial_number}/command"),
+                ("POST", f"{idds_base}/api/vehicle/{serial_number}/control"),
+                ("POST", f"{idds_base}/api/vehicle/{serial_number}/datapoint"),
+                ("GET",  f"{idds_base}/api/vehicle/{device_id}"),
+                ("POST", f"{idds_base}/api/vehicle/{device_id}/command"),
+                ("GET",  f"{idds_base}/api/device/{serial_number}"),
+                ("POST", f"{idds_base}/api/device/{serial_number}/command"),
+                ("GET",  f"{idds_base}/api/mower/{serial_number}"),
+            ]
+            print(f"\n[0i] idds.globetools.systems (IotDDSApi, sn={serial_number}, mac={mac}):")
+            for method, iurl in idds_candidates:
+                try:
+                    async with raw_session.request(method, iurl, json={}, headers=idds_h) as r:
+                        body = await r.text()
+                        ok = r.status not in (404, 405)
+                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(r.status)+'  '}  {method} {iurl.replace(idds_base,'')}  → {r.status}: {body[:120]}")
+                except Exception as e:
+                    print(f"  ? ERROR  {method}  → {e}")
+
             # --- Part 0e: SignalR hub negotiate (confirmed reachable, needs GUC token) ---
             signalr_url = "https://signalr.globetools.systems:446/mowerSupport/negotiate?negotiateVersion=1"
             signalr_h = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
