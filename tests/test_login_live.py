@@ -350,6 +350,40 @@ class TestLiveLogin:
                 except _asyncio.TimeoutError:
                     print(f"  (no server messages in 5 s)")
 
+            # --- Part 0j: APK-discovered xlink paths (v_device / plain device / token refresh) ---
+            print(f"\n[0j] APK-discovered xlink endpoints:")
+            # Try refreshing xlink token first
+            refresh_payload = {
+                "corp_id": XLINK_CORP_ID,
+                "refresh_token": item.get("raw_refresh_token", "") or auth.xlink_token,
+            }
+            from custom_components.cramer_connect.const import XLINK_CORP_ID
+            refresh_h = {**headers}
+            async with raw_session.post(
+                f"{XLINK_URL}/v2/user/token/refresh",
+                json={"corp_id": XLINK_CORP_ID, "access_token": auth.xlink_token},
+                headers=refresh_h,
+            ) as r:
+                body = await r.text()
+                print(f"  token/refresh  → {r.status}: {body[:200]}")
+
+            # v_device endpoint (virtual device control)
+            v_device_url = f"{XLINK_URL}/v2/product/{product_id}/v_device/{device_id}"
+            cmd_payload = {"datapoints": {"97": {"value": '{"request":{"park_time":0,"park_reason":1}}'}}}
+            for method in ("GET", "POST", "PUT"):
+                async with raw_session.request(method, v_device_url, json=cmd_payload, headers=headers) as r:
+                    body = await r.text()
+                    ok = r.status not in (404, 405)
+                    print(f"  {'✓' if ok else '✗'}  {method} /v2/product/.../v_device/{device_id}  → {r.status}: {body[:120]}")
+
+            # plain /device/{device_id} endpoint
+            plain_device_url = f"{XLINK_URL}/v2/product/{product_id}/device/{device_id}"
+            for method in ("GET", "POST", "PUT"):
+                async with raw_session.request(method, plain_device_url, json=cmd_payload, headers=headers) as r:
+                    body = await r.text()
+                    ok = r.status not in (404, 405)
+                    print(f"  {'✓' if ok else '✗'}  {method} /v2/product/.../device/{device_id}  → {r.status}: {body[:120]}")
+
             # --- Part 0i: idds.globetools.systems (IotDDSApi scope in GUC token) ---
             serial_number = str(item.get("sn", ""))
             mac = str(item.get("mac", ""))
