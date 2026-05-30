@@ -236,6 +236,73 @@ class TestLiveLogin:
                     body = await resp.text()
                     print(f"  PUT /property/park with write token → {resp.status}: {body[:120]}")
 
+            # --- Part 0f: SignalR method name probe ---
+            from custom_components.cramer_connect.const import SIGNALR_URL
+            _SR_TERM = "\x1e"
+            import json as _sj
+            import aiohttp as _aio2
+
+            signalr_headers = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
+
+            async def _try_hub_method(method_name: str, args: list) -> str:
+                """Returns 'OK', 'no_method', or the error string."""
+                neg_url = f"{SIGNALR_URL}/negotiate?negotiateVersion=1"
+                async with raw_session.post(neg_url, headers=signalr_headers) as r:
+                    if r.status != 200:
+                        return f"negotiate_{r.status}"
+                    neg = await r.json()
+                token = neg.get("connectionToken", "")
+                ws_url = SIGNALR_URL.replace("https://", "wss://") + f"?id={token}"
+                invocation = _sj.dumps({"type": 1, "invocationId": "0", "target": method_name, "arguments": args}) + _SR_TERM
+                try:
+                    async with raw_session.ws_connect(ws_url, headers=signalr_headers) as ws:
+                        await ws.send_str(_sj.dumps({"protocol": "json", "version": 1}) + _SR_TERM)
+                        await asyncio.wait_for(ws.receive(), timeout=3)
+                        await ws.send_str(invocation)
+                        for _ in range(5):
+                            try:
+                                msg = await asyncio.wait_for(ws.receive(), timeout=3)
+                            except asyncio.TimeoutError:
+                                return "timeout"
+                            if msg.type == _aio2.WSMsgType.TEXT:
+                                for part in msg.data.split(_SR_TERM):
+                                    if not part.strip():
+                                        continue
+                                    try:
+                                        p = _sj.loads(part)
+                                    except ValueError:
+                                        continue
+                                    if p.get("type") == 3:
+                                        err = p.get("error", "")
+                                        if "does not exist" in err:
+                                            return "no_method"
+                                        return f"OK" if not err else f"err:{err[:80]}"
+                        return "no_response"
+                except Exception as e:
+                    return f"ex:{e}"
+
+            candidates = [
+                ("ParkMower",           [{"deviceId": int(device_id), "productId": product_id}]),
+                ("parkMower",           [{"deviceId": int(device_id), "productId": product_id}]),
+                ("Park",                [{"deviceId": int(device_id), "productId": product_id}]),
+                ("park",                [{"deviceId": int(device_id), "productId": product_id}]),
+                ("ParkMowerRequest",    [{"deviceId": int(device_id), "productId": product_id}]),
+                ("StartMower",          [{"deviceId": int(device_id), "productId": product_id}]),
+                ("startMower",          [{"deviceId": int(device_id), "productId": product_id}]),
+                ("Start",               [{"deviceId": int(device_id), "productId": product_id}]),
+                ("start",               [{"deviceId": int(device_id), "productId": product_id}]),
+                ("SendCommand",         [{"deviceId": int(device_id), "command": "park"}]),
+                ("InvokeCommand",       [{"deviceId": int(device_id), "command": "park"}]),
+                ("Execute",             [{"deviceId": int(device_id), "command": "park"}]),
+                ("ParkMower",           [int(device_id), product_id]),
+                ("ParkMower",           [{"device_id": int(device_id), "product_id": product_id}]),
+            ]
+            print(f"\n[0f] SignalR hub method probe (hub: mowerSupport):")
+            for method, args in candidates:
+                result = await _try_hub_method(method, args)
+                icon = "✓" if result == "OK" else ("?" if result not in ("no_method", "no_response") else "✗")
+                print(f"  {icon}  {method:30s} → {result}")
+
             # --- Part 0e: SignalR hub negotiate (confirmed reachable, needs GUC token) ---
             signalr_url = "https://signalr.globetools.systems:446/mowerSupport/negotiate?negotiateVersion=1"
             signalr_h = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
