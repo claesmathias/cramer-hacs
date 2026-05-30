@@ -350,35 +350,39 @@ class TestLiveLogin:
                 except _asyncio.TimeoutError:
                     print(f"  (no server messages in 5 s)")
 
-            # --- Part 0j: APK-discovered xlink paths (v_device / plain device / token refresh) ---
+            # --- Part 0j: v_device write with token refresh ---
             from custom_components.cramer_connect.const import XLINK_CORP_ID
-            print(f"\n[0j] APK-discovered xlink endpoints:")
-            # Try refreshing xlink token first
-            refresh_h = {**headers}
+            print(f"\n[0j] v_device write + token refresh:")
+
+            refreshed_token = None
             async with raw_session.post(
                 f"{XLINK_URL}/v2/user/token/refresh",
-                json={"corp_id": XLINK_CORP_ID, "access_token": auth.xlink_token},
-                headers=refresh_h,
+                json={"corp_id": XLINK_CORP_ID, "refresh_token": auth.xlink_refresh_token},
+                headers=headers,
             ) as r:
                 body = await r.text()
-                print(f"  token/refresh  → {r.status}: {body[:200]}")
+                print(f"  token/refresh (refresh_token={auth.xlink_refresh_token[:10]}...)  → {r.status}: {body[:200]}")
+                if r.status == 200:
+                    import json as _jj
+                    refreshed_token = _jj.loads(body).get("access_token")
+                    print(f"  refreshed_token = {refreshed_token!r}")
 
-            # v_device endpoint (virtual device control)
             v_device_url = f"{XLINK_URL}/v2/product/{product_id}/v_device/{device_id}"
-            cmd_payload = {"datapoints": {"97": {"value": '{"request":{"park_time":0,"park_reason":1}}'}}}
-            for method in ("GET", "POST", "PUT"):
-                async with raw_session.request(method, v_device_url, json=cmd_payload, headers=headers) as r:
-                    body = await r.text()
-                    ok = r.status not in (404, 405)
-                    print(f"  {'✓' if ok else '✗'}  {method} /v2/product/.../v_device/{device_id}  → {r.status}: {body[:120]}")
+            cmd_payload = {"97": '{"request":{"park_time":0,"park_reason":1}}'}
 
-            # plain /device/{device_id} endpoint
-            plain_device_url = f"{XLINK_URL}/v2/product/{product_id}/device/{device_id}"
-            for method in ("GET", "POST", "PUT"):
-                async with raw_session.request(method, plain_device_url, json=cmd_payload, headers=headers) as r:
-                    body = await r.text()
-                    ok = r.status not in (404, 405)
-                    print(f"  {'✓' if ok else '✗'}  {method} /v2/product/.../device/{device_id}  → {r.status}: {body[:120]}")
+            auth_combos = [
+                ("user token",         headers),
+                ("dev authorize_code", {**base_no_token, "Access-Token": device_authorize_code, "Xlink-Access-Token": device_authorize_code}),
+            ]
+            if refreshed_token:
+                auth_combos.append(("refreshed", {**headers, "Access-Token": refreshed_token, "Xlink-Access-Token": refreshed_token}))
+
+            for label, h in auth_combos:
+                for method in ("POST", "PUT"):
+                    async with raw_session.request(method, v_device_url, json=cmd_payload, headers=h) as r:
+                        body = await r.text()
+                        ok = r.status in (200, 201, 204)
+                        print(f"  {'✓ OK' if ok else '✗   '}  {method} v_device [{label}]  → {r.status}: {body[:100]}")
 
             # --- Part 0i: idds.globetools.systems (IotDDSApi scope in GUC token) ---
             serial_number = str(item.get("sn", ""))

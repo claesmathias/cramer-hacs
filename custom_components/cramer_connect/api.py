@@ -88,6 +88,7 @@ class CramerAuth:
     xlink_token: str = ""
     xlink_user_id: str = ""
     xlink_authorize: str = ""
+    xlink_refresh_token: str = ""
     fetched_at: datetime = field(default_factory=datetime.now)
 
 
@@ -137,7 +138,7 @@ class CramerConnectClient:
                 is_fleet_user=True,
             )
         else:
-            xlink_token, xlink_user_id, xlink_authorize = await self._xlink_login(username, password)
+            xlink_token, xlink_user_id, xlink_authorize, xlink_refresh = await self._xlink_login(username, password)
             guc_token, guc_refresh, guc_expires = await self._guc_direct_login(
                 username, password
             )
@@ -151,6 +152,7 @@ class CramerConnectClient:
                 xlink_token=xlink_token,
                 xlink_user_id=xlink_user_id,
                 xlink_authorize=xlink_authorize,
+                xlink_refresh_token=xlink_refresh,
             )
 
     async def refresh_guc_token(
@@ -266,8 +268,8 @@ class CramerConnectClient:
     # Consumer (non-fleet / xlink) path
     # ------------------------------------------------------------------
 
-    async def _xlink_login(self, username: str, password: str) -> tuple[str, str, str]:
-        """Returns (xlink_access_token, xlink_user_id, authorize)."""
+    async def _xlink_login(self, username: str, password: str) -> tuple[str, str, str, str]:
+        """Returns (xlink_access_token, xlink_user_id, authorize, refresh_token)."""
         url = f"{XLINK_URL}/v2/user_auth"
         payload = {
             "corp_id": XLINK_CORP_ID,
@@ -292,9 +294,10 @@ class CramerConnectClient:
         token = data.get("access_token")
         user_id = str(data.get("user_id", ""))
         authorize = str(data.get("authorize", ""))
+        refresh = str(data.get("refresh_token", ""))
         if not token:
             raise CramerConnectAuthError("No access_token in xlink login response")
-        return token, user_id, authorize
+        return token, user_id, authorize, refresh
 
     async def _guc_direct_login(
         self, username: str, password: str
