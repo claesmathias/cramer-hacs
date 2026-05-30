@@ -236,6 +236,15 @@ class TestLiveLogin:
                     body = await resp.text()
                     print(f"  PUT /property/park with write token → {resp.status}: {body[:120]}")
 
+            # --- Part 0e: SignalR hub negotiate (confirmed reachable, needs GUC token) ---
+            signalr_url = "https://signalr.globetools.systems:446/mowerSupport/negotiate?negotiateVersion=1"
+            signalr_h = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
+            print(f"\n[0e] SignalR hub negotiate (signalr.globetools.systems:446/mowerSupport):")
+            async with raw_session.post(signalr_url, headers=signalr_h) as resp:
+                body = await resp.text()
+                ok = resp.status in (200, 201)
+                print(f"  {'✓ OK' if ok else '✗   '}  → {resp.status}: {body[:400]}")
+
             # --- Part 0d: device.globetools.systems (from HAR, held 60s connection) ---
             dev_h = {**_base_headers(), "Authorization": f"Bearer {auth.guc_token}"}
             dev_candidates = [
