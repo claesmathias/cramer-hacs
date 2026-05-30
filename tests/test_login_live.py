@@ -313,7 +313,7 @@ class TestLiveLogin:
                 print(f"  {'✓ OK' if ok else '✗   '}  → {resp.status}: {body[:400]}")
 
             # --- Part 0d: device.globetools.systems (from HAR, held 60s connection) ---
-            dev_h = {**_base_headers(), "Authorization": f"Bearer {auth.guc_token}"}
+            dev_h = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
             dev_candidates = [
                 ("GET",  f"{DEVICE_API_URL}/api/v1/device/{device_id}"),
                 ("GET",  f"{DEVICE_API_URL}/api/v1/product/{product_id}/device/{device_id}"),
