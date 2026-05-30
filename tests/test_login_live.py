@@ -212,7 +212,8 @@ class TestLiveLogin:
 
             # --- Part 0c: try to get a write-capable XlinkToken via fleet API ---
             from custom_components.cramer_connect.const import FLEET_API_URL, DEVICE_API_URL
-            fleet_h = {**_base_headers(), "Authorization": f"Bearer {auth.guc_token}"}
+            base_app_headers = {k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token", "Xlink-User-Id")}
+            fleet_h = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
             print(f"\n[0c] Fleet API: get XlinkToken with GUC bearer:")
             xlink_write_token = None
             async with raw_session.post(
