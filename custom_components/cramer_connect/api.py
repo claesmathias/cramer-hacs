@@ -506,11 +506,10 @@ class CramerConnectClient:
         command: dict,
         device_authorize: str = "",
     ) -> None:
-        """Write datapoints to a device via PUT /device-state.
+        """Write datapoints via POST /app_datapoint_value (confirmed from APK).
 
         command format: {"96": {"request": {"override_timer": 1}}}
-        Wrapped automatically into {"datapoints": {"96": {"value": "<json>"}}}
-        device_authorize: per-device authorize code from subscribe/devices response.
+        Retries once after 3 s on 503 (transient service unavailable).
         """
         import json as _json
 
@@ -528,21 +527,33 @@ class CramerConnectClient:
                 for dp_key, dp_val in command.items()
             },
         }
-        async with self._session.post(url, json=payload, headers=headers) as resp:
-            if resp.status not in (200, 204):
+
+        for attempt in range(2):
+            async with self._session.post(url, json=payload, headers=headers) as resp:
+                if resp.status in (200, 201, 204):
+                    return
                 text = await resp.text()
-                try:
-                    import json as _json2
-                    code = _json2.loads(text).get("error", {}).get("code")
-                    if code == 4031021:
-                        raise CramerConnectTokenExpiredError("Xlink authorize token expired")
-                    if code in (4031001, 4031002):
-                        raise CramerConnectAuthError("Xlink token invalid or expired")
-                except (ValueError, AttributeError):
-                    pass
-                raise CramerConnectApiError(
-                    f"send_command failed ({resp.status}): {text}"
-                )
+
+            try:
+                body = _json.loads(text)
+                code = body.get("error", {}).get("code")
+            except (ValueError, AttributeError):
+                code = None
+
+            if code == 4031021:
+                raise CramerConnectTokenExpiredError("Xlink authorize token expired")
+            if code in (4031001, 4031002):
+                raise CramerConnectAuthError("Xlink token invalid or expired")
+
+            # 503 = backend temporarily unavailable — retry once after a short wait
+            if resp.status == 503 and attempt == 0:
+                _LOGGER.debug("app_datapoint_value returned 503, retrying in 3 s")
+                await asyncio.sleep(3)
+                continue
+
+            raise CramerConnectApiError(
+                f"send_command failed ({resp.status}): {text}"
+            )
 
     # ------------------------------------------------------------------
     # Shared helpers
