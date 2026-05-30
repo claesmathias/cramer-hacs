@@ -384,6 +384,28 @@ class TestLiveLogin:
                         ok = r.status in (200, 201, 204)
                         print(f"  {'✓ OK' if ok else '✗   '}  {method} v_device [{label}]  → {r.status}: {body[:100]}")
 
+            # --- Part 0k: RLM-specific xlink endpoints (from APK) ---
+            print(f"\n[0k] RLM-specific xlink endpoints:")
+            rlm_candidates = [
+                ("GET",  f"{XLINK_URL}/v2/rlm/validation/sn/{serial_number}"),
+                ("GET",  f"{XLINK_URL}/v2/service/rlm2/device/psk"),
+                ("POST", f"{XLINK_URL}/v2/service/rlm2/device/psk"),
+                ("GET",  f"{XLINK_URL}/v2/service/rlm2/device/user/add"),
+                ("POST", f"{XLINK_URL}/v2/service/rlm2/device/user/add"),
+                ("GET",  f"{XLINK_URL}/v2/rlm/device/pairing"),
+                ("POST", f"{XLINK_URL}/v2/rlm/device/pairing"),
+            ]
+            rlm_payload = {"device_id": int(device_id), "product_id": product_id,
+                           "sn": serial_number}
+            for method, rurl in rlm_candidates:
+                try:
+                    async with raw_session.request(method, rurl, json=rlm_payload, headers=headers) as r:
+                        body = await r.text()
+                        ok = r.status not in (404, 405)
+                        print(f"  {'✓ PATH' if ok else '✗ '+str(r.status)+'  '}  {method} {rurl.replace(XLINK_URL,'')}  → {r.status}: {body[:150]}")
+                except Exception as e:
+                    print(f"  ? ERROR  {method}  → {e}")
+
             # --- Part 0i: idds.globetools.systems (IotDDSApi scope in GUC token) ---
             serial_number = str(item.get("sn", ""))
             mac = str(item.get("mac", ""))

@@ -73,6 +73,8 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
 
     async def _ensure_auth(self) -> None:
         guc_age = (datetime.now() - self._auth.fetched_at).total_seconds()
+        # Re-authenticate when GUC token is about to expire OR when xlink token
+        # is also near expiry (xlink tokens expire in ~2 h, same refresh cycle).
         if guc_age < self._auth.guc_expires_in - 60:
             return
 
