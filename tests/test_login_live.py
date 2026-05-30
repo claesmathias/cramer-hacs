@@ -238,9 +238,10 @@ class TestLiveLogin:
 
             # --- Part 0f: SignalR method name probe ---
             from custom_components.cramer_connect.const import SIGNALR_URL
-            _SR_TERM = "\x1e"
+            import asyncio as _asyncio
             import json as _sj
             import aiohttp as _aio2
+            _SR_TERM = "\x1e"
 
             signalr_headers = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
 
@@ -257,12 +258,12 @@ class TestLiveLogin:
                 try:
                     async with raw_session.ws_connect(ws_url, headers=signalr_headers) as ws:
                         await ws.send_str(_sj.dumps({"protocol": "json", "version": 1}) + _SR_TERM)
-                        await asyncio.wait_for(ws.receive(), timeout=3)
+                        await _asyncio.wait_for(ws.receive(), timeout=3)
                         await ws.send_str(invocation)
                         for _ in range(5):
                             try:
-                                msg = await asyncio.wait_for(ws.receive(), timeout=3)
-                            except asyncio.TimeoutError:
+                                msg = await _asyncio.wait_for(ws.receive(), timeout=3)
+                            except _asyncio.TimeoutError:
                                 return "timeout"
                             if msg.type == _aio2.WSMsgType.TEXT:
                                 for part in msg.data.split(_SR_TERM):
