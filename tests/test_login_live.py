@@ -210,15 +210,50 @@ class TestLiveLogin:
                     ok = resp.status in (200, 201, 204)
                     print(f"  {'✓ OK' if ok else '✗   '}  PUT /property/{key}  → {resp.status}: {body[:120]}")
 
-            # --- Part 0c: same property endpoints with GUC bearer ---
-            guc_h = {**{k: v for k, v in headers.items() if "Token" not in k and "User-Id" not in k},
-                     "Authorization": f"Bearer {auth.guc_token}"}
-            print(f"\n[0c] device property endpoints (GUC bearer):")
-            for key, val in [("park", {"value": "1"}), ("pause", {"value": "1"})]:
-                async with raw_session.put(f"{prop_base}/{key}", json=val, headers=guc_h) as resp:
+            # --- Part 0c: try to get a write-capable XlinkToken via fleet API ---
+            from custom_components.cramer_connect.const import FLEET_API_URL, DEVICE_API_URL
+            fleet_h = {**_base_headers(), "Authorization": f"Bearer {auth.guc_token}"}
+            print(f"\n[0c] Fleet API: get XlinkToken with GUC bearer:")
+            xlink_write_token = None
+            async with raw_session.post(
+                f"{FLEET_API_URL}/api/account/XlinkToken",
+                json={"userId": auth.xlink_user_id},
+                headers=fleet_h,
+            ) as resp:
+                body = await resp.text()
+                ok = resp.status in (200, 201)
+                print(f"  {'✓ OK' if ok else '✗   '}  → {resp.status}: {body[:200]}")
+                if ok:
+                    import json as _j
+                    xlink_write_token = _j.loads(body).get("accessToken") or _j.loads(body).get("access_token")
+                    print(f"  xlink_write_token = {xlink_write_token!r}")
+
+            # If we got a write token, try property PUT with it
+            if xlink_write_token:
+                wh = {**headers, "Access-Token": xlink_write_token, "Xlink-Access-Token": xlink_write_token}
+                async with raw_session.put(f"{prop_base}/park", json={"value": "1"}, headers=wh) as resp:
                     body = await resp.text()
-                    ok = resp.status in (200, 201, 204)
-                    print(f"  {'✓ OK' if ok else '✗   '}  PUT /property/{key}  → {resp.status}: {body[:120]}")
+                    print(f"  PUT /property/park with write token → {resp.status}: {body[:120]}")
+
+            # --- Part 0d: device.globetools.systems (from HAR, held 60s connection) ---
+            dev_h = {**_base_headers(), "Authorization": f"Bearer {auth.guc_token}"}
+            dev_candidates = [
+                ("GET",  f"{DEVICE_API_URL}/api/v1/device/{device_id}"),
+                ("GET",  f"{DEVICE_API_URL}/api/v1/product/{product_id}/device/{device_id}"),
+                ("POST", f"{DEVICE_API_URL}/api/v1/device/{device_id}/command"),
+                ("POST", f"{DEVICE_API_URL}/api/v1/device/{device_id}/control"),
+                ("POST", f"{DEVICE_API_URL}/api/device/{device_id}/dp-write"),
+                ("POST", f"{DEVICE_API_URL}/v2/product/{product_id}/app_datapoint_value"),
+            ]
+            print(f"\n[0d] device.globetools.systems (HAR-discovered domain):")
+            for method, durl in dev_candidates:
+                try:
+                    async with raw_session.request(method, durl, json={}, headers=dev_h) as resp:
+                        body = await resp.text()
+                        ok = resp.status not in (404, 405)
+                        print(f"  {'✓ PATH EXISTS' if ok else '✗ '+str(resp.status)+'  '}  {method} {durl.replace(DEVICE_API_URL,'')}  → {resp.status}: {body[:100]}")
+                except Exception as e:
+                    print(f"  ✗ ERROR  {method}  → {e}")
 
             # --- Part 1: xlink PUT /device-state with all auth combos ---
             write_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
