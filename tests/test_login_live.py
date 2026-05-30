@@ -351,13 +351,9 @@ class TestLiveLogin:
                     print(f"  (no server messages in 5 s)")
 
             # --- Part 0j: APK-discovered xlink paths (v_device / plain device / token refresh) ---
+            from custom_components.cramer_connect.const import XLINK_CORP_ID
             print(f"\n[0j] APK-discovered xlink endpoints:")
             # Try refreshing xlink token first
-            refresh_payload = {
-                "corp_id": XLINK_CORP_ID,
-                "refresh_token": item.get("raw_refresh_token", "") or auth.xlink_token,
-            }
-            from custom_components.cramer_connect.const import XLINK_CORP_ID
             refresh_h = {**headers}
             async with raw_session.post(
                 f"{XLINK_URL}/v2/user/token/refresh",
