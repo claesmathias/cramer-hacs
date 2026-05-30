@@ -16,12 +16,10 @@ from .coordinator import CramerConnectCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# dp[96] override_timer=1 → start mowing immediately (ignores schedule)
-_CMD_START = {"96": {"request": {"override_timer": 1}}}
-# dp[97] park_reason=2 → return to dock / stop current job
-_CMD_STOP = {"97": {"request": {"park_time": 0, "park_reason": 2}}}
-# dp[97] park_reason=1 → park until next schedule
-_CMD_PARK = {"97": {"request": {"park_time": 0, "park_reason": 1}}}
+# SignalR hub method names (confirmed from APK classes2.dex)
+_CMD_START = "StartMowerRequest"
+_CMD_STOP = "ParkMowerRequest"
+_CMD_PARK = "PauseMowerRequest"
 
 
 async def async_setup_entry(
@@ -75,27 +73,24 @@ class _CramerMowerButton(CoordinatorEntity[CramerConnectCoordinator], ButtonEnti
             serial_number=device.serial_number,
         )
 
-    async def _send(self, payload: dict) -> None:
+    async def _send(self, hub_method: str) -> None:
         device = self._device
         try:
             await self.coordinator.client.send_command(
                 self.coordinator.auth,
                 device.product_id,
                 device.device_id,
-                payload,
-                device_authorize=device.device_authorize,
+                hub_method,
             )
         except CramerConnectTokenExpiredError:
-            _LOGGER.debug("Authorize token expired, re-authenticating and retrying")
+            _LOGGER.debug("GUC token expired, re-authenticating and retrying")
             await self.coordinator.force_reauth()
-            # After re-auth, re-fetch device to get a fresh device_authorize
             fresh_device = self.coordinator.data.get(self._device_id, device)
             await self.coordinator.client.send_command(
                 self.coordinator.auth,
                 fresh_device.product_id,
                 fresh_device.device_id,
-                payload,
-                device_authorize=fresh_device.device_authorize,
+                hub_method,
             )
 
 
@@ -108,7 +103,7 @@ class CramerStartButton(_CramerMowerButton):
         self._attr_unique_id = f"{device_id}_start"
 
     async def async_press(self) -> None:
-        _LOGGER.debug("Start mowing: %s", self._device_id)
+        _LOGGER.debug("SignalR StartMowerRequest: %s", self._device_id)
         await self._send(_CMD_START)
         await self.coordinator.async_request_refresh()
 
@@ -122,7 +117,7 @@ class CramerStopButton(_CramerMowerButton):
         self._attr_unique_id = f"{device_id}_stop"
 
     async def async_press(self) -> None:
-        _LOGGER.debug("Return to dock: %s", self._device_id)
+        _LOGGER.debug("SignalR ParkMowerRequest: %s", self._device_id)
         await self._send(_CMD_STOP)
         await self.coordinator.async_request_refresh()
 
@@ -136,6 +131,6 @@ class CramerParkButton(_CramerMowerButton):
         self._attr_unique_id = f"{device_id}_park"
 
     async def async_press(self) -> None:
-        _LOGGER.debug("Park until next schedule: %s", self._device_id)
+        _LOGGER.debug("SignalR PauseMowerRequest: %s", self._device_id)
         await self._send(_CMD_PARK)
         await self.coordinator.async_request_refresh()

@@ -160,7 +160,7 @@ class TestStartButton:
         btn = CramerStartButton(coord, dev.device_id)
         await btn.async_press()
         coord.client.send_command.assert_awaited_once_with(
-            coord.auth, dev.product_id, dev.device_id, _CMD_START, device_authorize=""
+            coord.auth, dev.product_id, dev.device_id, _CMD_START
         )
 
     @pytest.mark.asyncio
@@ -193,7 +193,7 @@ class TestStopButton:
         btn = CramerStopButton(coord, dev.device_id)
         await btn.async_press()
         coord.client.send_command.assert_awaited_once_with(
-            coord.auth, dev.product_id, dev.device_id, _CMD_STOP, device_authorize=""
+            coord.auth, dev.product_id, dev.device_id, _CMD_STOP
         )
 
 
@@ -218,10 +218,8 @@ class TestParkButton:
         btn = CramerParkButton(coord, dev.device_id)
         await btn.async_press()
         coord.client.send_command.assert_awaited_once_with(
-            coord.auth, dev.product_id, dev.device_id, _CMD_PARK, device_authorize=""
+            coord.auth, dev.product_id, dev.device_id, _CMD_PARK
         )
 
-    def test_park_and_stop_use_different_park_reason(self):
-        stop_reason = _CMD_STOP["97"]["request"]["park_reason"]
-        park_reason = _CMD_PARK["97"]["request"]["park_reason"]
-        assert stop_reason != park_reason
+    def test_park_and_stop_use_different_hub_methods(self):
+        assert _CMD_STOP != _CMD_PARK

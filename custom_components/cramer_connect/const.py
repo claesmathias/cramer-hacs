@@ -8,6 +8,7 @@ XLINK_URL = "https://xapi.globetools.systems"
 GUC_URL = "https://guc.globetools.systems:446"
 DEVICE_API_URL = "https://device.globetools.systems"
 PRODUCT_SERVICE_URL = "https://productservice.globetools.systems"
+SIGNALR_URL = "https://signalr.globetools.systems:446/mowerSupport"
 
 # GUC OAuth2 credentials — extracted from the Android app
 GUC_CLIENT_ID = "CramerConnect"

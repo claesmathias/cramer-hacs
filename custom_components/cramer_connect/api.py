@@ -22,6 +22,7 @@ from .const import (
     GUC_URL,
     MOWER_STATE_MAP,
     ROBOTIC_MOWER_PRODUCT_CODES,
+    SIGNALR_URL,
     XLINK_CORP_ID,
     XLINK_URL,
 )
@@ -503,57 +504,90 @@ class CramerConnectClient:
         auth: CramerAuth,
         product_id: str,
         device_id: str,
-        command: dict,
+        hub_method: str,
+        arguments: list | None = None,
         device_authorize: str = "",
     ) -> None:
-        """Write datapoints via POST /app_datapoint_value (confirmed from APK).
+        """Send a command to the mower via the SignalR hub.
 
-        command format: {"96": {"request": {"override_timer": 1}}}
-        Retries once after 3 s on 503 (transient service unavailable).
+        Confirmed endpoint: wss://signalr.globetools.systems:446/mowerSupport
+        Auth: GUC bearer token (negotiated via HTTP, then passed in WS URL).
+
+        hub_method examples: StartMowerRequest, ParkMowerRequest, PauseMowerRequest
+        arguments: list of positional arguments for the hub method.
         """
         import json as _json
 
-        url = f"{XLINK_URL}/v2/product/{product_id}/app_datapoint_value"
-        headers = {
-            **_base_headers(),
-            "Access-Token": auth.xlink_token,
-            "Xlink-Access-Token": auth.xlink_token,
-            "Xlink-User-Id": auth.xlink_user_id,
-        }
-        payload = {
-            "device_id": int(device_id),
-            "datapoints": {
-                str(dp_key): {"value": _json.dumps(dp_val)}
-                for dp_key, dp_val in command.items()
-            },
-        }
+        _SR_TERMINATOR = "\x1e"
 
-        for attempt in range(2):
-            async with self._session.post(url, json=payload, headers=headers) as resp:
-                if resp.status in (200, 201, 204):
-                    return
+        # Step 1: negotiate to get the connection token
+        negotiate_url = f"{SIGNALR_URL}/negotiate?negotiateVersion=1"
+        headers = {"Authorization": f"Bearer {auth.guc_token}"}
+        async with self._session.post(negotiate_url, headers=headers) as resp:
+            if resp.status != 200:
                 text = await resp.text()
+                raise CramerConnectApiError(
+                    f"SignalR negotiate failed ({resp.status}): {text}"
+                )
+            neg = await resp.json()
 
-            try:
-                body = _json.loads(text)
-                code = body.get("error", {}).get("code")
-            except (ValueError, AttributeError):
-                code = None
+        connection_token = neg.get("connectionToken", "")
+        ws_url = (
+            SIGNALR_URL.replace("https://", "wss://")
+            + f"?id={connection_token}"
+        )
 
-            if code == 4031021:
-                raise CramerConnectTokenExpiredError("Xlink authorize token expired")
-            if code in (4031001, 4031002):
-                raise CramerConnectAuthError("Xlink token invalid or expired")
+        # Step 2: connect WebSocket, handshake, invoke
+        args = arguments if arguments is not None else [
+            {"deviceId": int(device_id), "productId": product_id}
+        ]
+        invocation = _json.dumps({
+            "type": 1,
+            "invocationId": "0",
+            "target": hub_method,
+            "arguments": args,
+        }) + _SR_TERMINATOR
 
-            # 503 = backend temporarily unavailable — retry once after a short wait
-            if resp.status == 503 and attempt == 0:
-                _LOGGER.debug("app_datapoint_value returned 503, retrying in 3 s")
-                await asyncio.sleep(3)
-                continue
+        try:
+            async with self._session.ws_connect(ws_url, headers=headers) as ws:
+                # Send SignalR JSON handshake
+                await ws.send_str(
+                    _json.dumps({"protocol": "json", "version": 1}) + _SR_TERMINATOR
+                )
+                # Read handshake ack (may be empty or {})
+                await asyncio.wait_for(ws.receive(), timeout=5)
 
-            raise CramerConnectApiError(
-                f"send_command failed ({resp.status}): {text}"
-            )
+                # Send the hub method invocation
+                await ws.send_str(invocation)
+                _LOGGER.debug("SignalR invoked %s for device %s", hub_method, device_id)
+
+                # Wait for completion message (type 3) or timeout
+                deadline = 10.0
+                while deadline > 0:
+                    try:
+                        msg = await asyncio.wait_for(ws.receive(), timeout=min(deadline, 5))
+                        deadline -= 5
+                    except asyncio.TimeoutError:
+                        break
+                    if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
+                        break
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        for part in msg.data.split(_SR_TERMINATOR):
+                            if not part.strip():
+                                continue
+                            try:
+                                parsed = _json.loads(part)
+                            except ValueError:
+                                continue
+                            if parsed.get("type") == 3:
+                                err = parsed.get("error")
+                                if err:
+                                    raise CramerConnectApiError(
+                                        f"SignalR hub error: {err}"
+                                    )
+                                return  # success
+        except aiohttp.ClientError as err:
+            raise CramerConnectApiError(f"SignalR connection error: {err}") from err
 
     # ------------------------------------------------------------------
     # Shared helpers
