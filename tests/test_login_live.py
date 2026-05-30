@@ -298,11 +298,46 @@ class TestLiveLogin:
                 ("ParkMower",           [int(device_id), product_id]),
                 ("ParkMower",           [{"device_id": int(device_id), "product_id": product_id}]),
             ]
-            print(f"\n[0f] SignalR hub method probe (hub: mowerSupport):")
-            for method, args in candidates:
+            print(f"\n[0f] SignalR method probe on mowerSupport hub:")
+            for method, args in candidates[:6]:  # just first 6 - we know rest fail
                 result = await _try_hub_method(method, args)
                 icon = "✓" if result == "OK" else ("?" if result not in ("no_method", "no_response") else "✗")
                 print(f"  {icon}  {method:30s} → {result}")
+
+            # Probe other hub names on signalr.globetools.systems:446
+            print(f"\n[0g] Other hub names on signalr.globetools.systems:446:")
+            other_hubs = ["mowerControl", "control", "command", "device", "mowing",
+                          "mower", "iotHub", "deviceControl", "CommandHub"]
+            base_signalr = "https://signalr.globetools.systems:446"
+            for hub in other_hubs:
+                hub_url = f"{base_signalr}/{hub}"
+                try:
+                    async with raw_session.post(
+                        f"{hub_url}/negotiate?negotiateVersion=1", headers=signalr_headers
+                    ) as r:
+                        body = await r.text()
+                        ok = r.status == 200
+                        print(f"  {'✓' if ok else '✗'}  /{hub}  → {r.status}: {body[:100]}")
+                except Exception as e:
+                    print(f"  ?  /{hub}  → {e}")
+
+            # Listen to mowerSupport for 5 s to see what server pushes
+            print(f"\n[0h] Listening to mowerSupport for server-pushed messages:")
+            neg_url2 = f"{SIGNALR_URL}/negotiate?negotiateVersion=1"
+            async with raw_session.post(neg_url2, headers=signalr_headers) as r:
+                neg2 = await r.json()
+            ws_url2 = SIGNALR_URL.replace("https://", "wss://") + f"?id={neg2['connectionToken']}"
+            async with raw_session.ws_connect(ws_url2, headers=signalr_headers) as ws:
+                await ws.send_str(_sj.dumps({"protocol": "json", "version": 1}) + _SR_TERM)
+                await _asyncio.wait_for(ws.receive(), timeout=3)  # ack
+                print(f"  Connected. Waiting 5 s for server messages...")
+                try:
+                    for _ in range(10):
+                        msg = await _asyncio.wait_for(ws.receive(), timeout=0.5)
+                        if msg.type == _aio2.WSMsgType.TEXT and msg.data.strip(_SR_TERM):
+                            print(f"  SERVER→CLIENT: {msg.data[:300]}")
+                except _asyncio.TimeoutError:
+                    print(f"  (no server messages in 5 s)")
 
             # --- Part 0e: SignalR hub negotiate (confirmed reachable, needs GUC token) ---
             signalr_url = "https://signalr.globetools.systems:446/mowerSupport/negotiate?negotiateVersion=1"
