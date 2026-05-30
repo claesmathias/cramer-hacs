@@ -183,17 +183,42 @@ class TestLiveLogin:
 
             base_no_token = {k: v for k, v in headers.items() if k not in ("Access-Token", "Xlink-Access-Token")}
 
-            # --- Part 0: NEW - app_datapoint_value endpoint (from APK) ---
+            # --- Part 0a: app_datapoint_value (known endpoint, testing again) ---
             app_dp_url = f"{XLINK_URL}/v2/product/{product_id}/app_datapoint_value"
             app_dp_payload = {
                 "device_id": int(device_id),
-                "datapoints": {"96": {"value": '{"request":{"override_timer":1}}'}},
+                "datapoints": {"97": {"value": '{"request":{"park_time":0,"park_reason":1}}'}},
             }
-            print(f"\n[0] app_datapoint_value POST (APK-discovered endpoint):")
+            print(f"\n[0a] app_datapoint_value POST:")
             async with raw_session.post(app_dp_url, json=app_dp_payload, headers=headers) as resp:
                 body = await resp.text()
                 ok = resp.status in (200, 201, 204)
                 print(f"  {'✓ OK' if ok else '✗   '}  → {resp.status}: {body[:200]}")
+
+            # --- Part 0b: device property endpoints (APK: setDeviceProperty) ---
+            prop_base = f"{XLINK_URL}/v2/product/{product_id}/device/{device_id}/property"
+            print(f"\n[0b] device property endpoints (xlink token):")
+            # GET all properties first
+            async with raw_session.get(prop_base, headers=headers) as resp:
+                body = await resp.text()
+                print(f"  GET  /property  → {resp.status}: {body[:300]}")
+            # PUT specific property keys
+            for key, val in [("park", {"value": "1"}), ("pause", {"value": "1"}),
+                              ("power", {"value": "1"}), ("operate", {"value": "1"})]:
+                async with raw_session.put(f"{prop_base}/{key}", json=val, headers=headers) as resp:
+                    body = await resp.text()
+                    ok = resp.status in (200, 201, 204)
+                    print(f"  {'✓ OK' if ok else '✗   '}  PUT /property/{key}  → {resp.status}: {body[:120]}")
+
+            # --- Part 0c: same property endpoints with GUC bearer ---
+            guc_h = {**{k: v for k, v in headers.items() if "Token" not in k and "User-Id" not in k},
+                     "Authorization": f"Bearer {auth.guc_token}"}
+            print(f"\n[0c] device property endpoints (GUC bearer):")
+            for key, val in [("park", {"value": "1"}), ("pause", {"value": "1"})]:
+                async with raw_session.put(f"{prop_base}/{key}", json=val, headers=guc_h) as resp:
+                    body = await resp.text()
+                    ok = resp.status in (200, 201, 204)
+                    print(f"  {'✓ OK' if ok else '✗   '}  PUT /property/{key}  → {resp.status}: {body[:120]}")
 
             # --- Part 1: xlink PUT /device-state with all auth combos ---
             write_url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
