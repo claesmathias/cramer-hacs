@@ -385,7 +385,9 @@ class TestLiveLogin:
                         print(f"  {'✓ OK' if ok else '✗   '}  {method} v_device [{label}]  → {r.status}: {body[:100]}")
 
             # --- Part 0k: RLM-specific xlink endpoints (from APK) ---
-            print(f"\n[0k] RLM-specific xlink endpoints:")
+            serial_number = str(item.get("sn", ""))
+            mac = str(item.get("mac", ""))
+            print(f"\n[0k] RLM-specific xlink endpoints (sn={serial_number}):")
             rlm_candidates = [
                 ("GET",  f"{XLINK_URL}/v2/rlm/validation/sn/{serial_number}"),
                 ("GET",  f"{XLINK_URL}/v2/service/rlm2/device/psk"),
@@ -407,8 +409,6 @@ class TestLiveLogin:
                     print(f"  ? ERROR  {method}  → {e}")
 
             # --- Part 0i: idds.globetools.systems (IotDDSApi scope in GUC token) ---
-            serial_number = str(item.get("sn", ""))
-            mac = str(item.get("mac", ""))
             idds_base = "https://idds.globetools.systems"
             idds_h = {**base_app_headers, "Authorization": f"Bearer {auth.guc_token}"}
             idds_candidates = [
