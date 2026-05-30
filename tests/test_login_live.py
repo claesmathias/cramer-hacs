@@ -282,21 +282,32 @@ class TestLiveLogin:
                 except Exception as e:
                     return f"ex:{e}"
 
+            dev_args   = [{"deviceId": int(device_id), "productId": product_id}]
+            snake_args = [{"device_id": int(device_id), "product_id": product_id}]
+            pos_args   = [int(device_id), product_id]
+            handle_args= [{"$type": "ParkMowerRequest", "deviceId": int(device_id), "productId": product_id}]
             candidates = [
-                ("ParkMower",           [{"deviceId": int(device_id), "productId": product_id}]),
-                ("parkMower",           [{"deviceId": int(device_id), "productId": product_id}]),
-                ("Park",                [{"deviceId": int(device_id), "productId": product_id}]),
-                ("park",                [{"deviceId": int(device_id), "productId": product_id}]),
-                ("ParkMowerRequest",    [{"deviceId": int(device_id), "productId": product_id}]),
-                ("StartMower",          [{"deviceId": int(device_id), "productId": product_id}]),
-                ("startMower",          [{"deviceId": int(device_id), "productId": product_id}]),
-                ("Start",               [{"deviceId": int(device_id), "productId": product_id}]),
-                ("start",               [{"deviceId": int(device_id), "productId": product_id}]),
-                ("SendCommand",         [{"deviceId": int(device_id), "command": "park"}]),
-                ("InvokeCommand",       [{"deviceId": int(device_id), "command": "park"}]),
-                ("Execute",             [{"deviceId": int(device_id), "command": "park"}]),
-                ("ParkMower",           [int(device_id), product_id]),
-                ("ParkMower",           [{"device_id": int(device_id), "product_id": product_id}]),
+                # PascalCase / camelCase without suffix
+                ("ParkMower",           dev_args),
+                ("parkMower",           dev_args),
+                ("Park",                dev_args),
+                ("park",                dev_args),
+                # Generic dispatch patterns
+                ("Handle",              handle_args),
+                ("Dispatch",            handle_args),
+                ("Process",             handle_args),
+                ("Send",                [{"type": "ParkMowerRequest", "deviceId": int(device_id)}]),
+                ("Command",             [{"type": "park", "deviceId": int(device_id)}]),
+                # Positional args
+                ("ParkMower",           pos_args),
+                # Snake_case
+                ("ParkMower",           snake_args),
+                # Simple verbs
+                ("park",                [int(device_id)]),
+                ("start",               [int(device_id)]),
+                ("pause",               [int(device_id)]),
+                # With string device_id
+                ("ParkMower",           [{"deviceId": device_id, "productId": product_id}]),
             ]
             print(f"\n[0f] SignalR method probe on mowerSupport hub:")
             for method, args in candidates[:6]:  # just first 6 - we know rest fail
