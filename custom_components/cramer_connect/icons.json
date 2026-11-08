@@ -50,10 +50,7 @@
         "default": "mdi:alert-circle-outline"
       },
       "last_error": {
-        "default": "mdi:alert",
-        "state": {
-          "No error": "mdi:check-circle-outline"
-        }
+        "default": "mdi:alert"
       },
       "software_version": {
         "default": "mdi:chip"
