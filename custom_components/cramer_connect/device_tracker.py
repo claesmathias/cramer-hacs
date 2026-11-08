@@ -30,7 +30,6 @@ async def async_setup_entry(
 class CramerMowerTracker(CoordinatorEntity[CramerConnectCoordinator], TrackerEntity):
     _attr_has_entity_name = True
     _attr_name = None
-    _attr_icon = "mdi:robot-mower"
     _attr_source_type = SourceType.GPS
 
     def __init__(

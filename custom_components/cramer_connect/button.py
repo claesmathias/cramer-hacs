@@ -1,25 +1,16 @@
-"""Button entities for remote control of Cramer mowers."""
+"""Button entities for remote control of Cramer mowers (RLM1, via MQTT)."""
 from __future__ import annotations
-
-import logging
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
-from .api import CramerDevice, CramerConnectTokenExpiredError
 from .const import DOMAIN
 from .coordinator import CramerConnectCoordinator
-
-_LOGGER = logging.getLogger(__name__)
-
-# SignalR hub method names (confirmed from APK classes2.dex)
-_CMD_START = "StartMowerRequest"
-_CMD_STOP = "ParkMowerRequest"
-_CMD_PARK = "PauseMowerRequest"
+from .entity import CramerMowerEntity, CramerScheduleMixin, remotely_controllable
 
 
 async def async_setup_entry(
@@ -30,107 +21,82 @@ async def async_setup_entry(
     coordinator: CramerConnectCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[ButtonEntity] = []
     for device_id, device in coordinator.data.items():
-        if not device.is_mower:
+        if not remotely_controllable(device):
             continue
         entities.extend([
             CramerStartButton(coordinator, device_id),
+            CramerPauseButton(coordinator, device_id),
             CramerStopButton(coordinator, device_id),
             CramerParkButton(coordinator, device_id),
+            CramerSetClockButton(coordinator, device_id),
         ])
     async_add_entities(entities)
 
 
-class _CramerMowerButton(CoordinatorEntity[CramerConnectCoordinator], ButtonEntity):
-    _attr_has_entity_name = True
+def minutes_until_end_of_day() -> int:
+    """Same as StringUtils.remainMinute() in the app."""
+    now = dt_util.now()
+    end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return max(1, int((end - now).total_seconds() // 60))
 
-    def __init__(
-        self,
-        coordinator: CramerConnectCoordinator,
-        device_id: str,
-    ) -> None:
-        super().__init__(coordinator)
-        self._device_id = device_id
 
-    @property
-    def _device(self) -> CramerDevice:
-        return self.coordinator.data[self._device_id]
+class _CramerMowerButton(CramerMowerEntity, ButtonEntity):
+    _key: str
 
-    @property
-    def available(self) -> bool:
-        return (
-            self._device_id in self.coordinator.data
-            and self._device.is_online
-        )
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        device = self._device
-        return DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.name,
-            manufacturer="Cramer",
-            model=device.mower_model or device.product_code or "Robotic Mower",
-            serial_number=device.serial_number,
-        )
-
-    async def _send(self, hub_method: str) -> None:
-        device = self._device
-        try:
-            await self.coordinator.client.send_command(
-                self.coordinator.auth,
-                device.product_id,
-                device.device_id,
-                hub_method,
-            )
-        except CramerConnectTokenExpiredError:
-            _LOGGER.debug("GUC token expired, re-authenticating and retrying")
-            await self.coordinator.force_reauth()
-            fresh_device = self.coordinator.data.get(self._device_id, device)
-            await self.coordinator.client.send_command(
-                self.coordinator.auth,
-                fresh_device.product_id,
-                fresh_device.device_id,
-                hub_method,
-            )
+    def __init__(self, coordinator: CramerConnectCoordinator, device_id: str) -> None:
+        super().__init__(coordinator, device_id)
+        self._attr_unique_id = f"{device_id}_{self._key}"
 
 
 class CramerStartButton(_CramerMowerButton):
-    _attr_name = "Start mowing"
-    _attr_icon = "mdi:play"
+    """Start mowing / resume schedule."""
 
-    def __init__(self, coordinator: CramerConnectCoordinator, device_id: str) -> None:
-        super().__init__(coordinator, device_id)
-        self._attr_unique_id = f"{device_id}_start"
+    _key = "start"
+    _attr_translation_key = "start"
+    # Same as lawn_mower start — off by default to avoid duplicate controls
+    _attr_entity_registry_enabled_default = False
 
     async def async_press(self) -> None:
-        _LOGGER.debug("SignalR StartMowerRequest: %s", self._device_id)
-        await self._send(_CMD_START)
-        await self.coordinator.async_request_refresh()
+        await self.async_start()
+
+
+class CramerPauseButton(_CramerMowerButton):
+    """Stop the mower where it is."""
+
+    _key = "pause"
+    _attr_translation_key = "pause"
+    _attr_entity_registry_enabled_default = False
+
+    async def async_press(self) -> None:
+        await self.async_stop()
 
 
 class CramerStopButton(_CramerMowerButton):
-    _attr_name = "Return to dock"
-    _attr_icon = "mdi:stop"
+    """Send the mower home and park it until further notice."""
 
-    def __init__(self, coordinator: CramerConnectCoordinator, device_id: str) -> None:
-        super().__init__(coordinator, device_id)
-        self._attr_unique_id = f"{device_id}_stop"
+    _key = "stop"
+    _attr_translation_key = "park_until_further_notice"
 
     async def async_press(self) -> None:
-        _LOGGER.debug("SignalR ParkMowerRequest: %s", self._device_id)
-        await self._send(_CMD_STOP)
-        await self.coordinator.async_request_refresh()
+        await self.async_park(None)
 
 
 class CramerParkButton(_CramerMowerButton):
-    _attr_name = "Park until next schedule"
-    _attr_icon = "mdi:home"
+    """Send the mower home and park it for the rest of the day."""
 
-    def __init__(self, coordinator: CramerConnectCoordinator, device_id: str) -> None:
-        super().__init__(coordinator, device_id)
-        self._attr_unique_id = f"{device_id}_park"
+    _key = "park"
+    _attr_translation_key = "park_rest_of_day"
 
     async def async_press(self) -> None:
-        _LOGGER.debug("SignalR PauseMowerRequest: %s", self._device_id)
-        await self._send(_CMD_PARK)
-        await self.coordinator.async_request_refresh()
+        await self.async_park(minutes_until_end_of_day())
+
+
+class CramerSetClockButton(CramerScheduleMixin, _CramerMowerButton):
+    """Set the mower clock to Home Assistant's time (app: 'incorrect time')."""
+
+    _key = "set_clock"
+    _attr_translation_key = "set_clock"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    async def async_press(self) -> None:
+        await self.async_set_clock()

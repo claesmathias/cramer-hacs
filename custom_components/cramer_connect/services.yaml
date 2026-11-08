@@ -1,0 +1,75 @@
+park:
+  target:
+    entity:
+      integration: cramer_connect
+      domain: lawn_mower
+  fields:
+    duration:
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 65533
+          unit_of_measurement: min
+          mode: box
+
+set_schedule:
+  target:
+    entity:
+      integration: cramer_connect
+      domain: lawn_mower
+  fields:
+    days:
+      required: true
+      selector:
+        select:
+          multiple: true
+          translation_key: days
+          options:
+            - monday
+            - tuesday
+            - wednesday
+            - thursday
+            - friday
+            - saturday
+            - sunday
+    timer_1_start:
+      selector:
+        time:
+    timer_1_end:
+      selector:
+        time:
+    timer_2_start:
+      selector:
+        time:
+    timer_2_end:
+      selector:
+        time:
+
+start_nonstop_mowing:
+  target:
+    entity:
+      integration: cramer_connect
+      domain: lawn_mower
+  fields:
+    days:
+      required: true
+      default: 2
+      selector:
+        number:
+          min: 1
+          max: 24
+          unit_of_measurement: d
+          mode: slider
+
+cancel_nonstop_mowing:
+  target:
+    entity:
+      integration: cramer_connect
+      domain: lawn_mower
+
+set_clock:
+  target:
+    entity:
+      integration: cramer_connect
+      domain: lawn_mower

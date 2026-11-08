@@ -1,0 +1,122 @@
+{
+  "entity": {
+    "sensor": {
+      "state": {
+        "default": "mdi:robot-mower",
+        "state": {
+          "mowing": "mdi:robot-mower",
+          "mowing_secondary_area": "mdi:robot-mower",
+          "charging": "mdi:battery-charging",
+          "paused": "mdi:pause-circle",
+          "stop_button_pressed": "mdi:stop-circle",
+          "leaving_charging_station": "mdi:home-export-outline",
+          "searching_charging_station": "mdi:home-search",
+          "error": "mdi:alert-circle",
+          "fatal_error": "mdi:alert-octagon",
+          "alarm_state": "mdi:alarm-light",
+          "recovery_state": "mdi:backup-restore",
+          "parked": "mdi:home",
+          "parked_by_schedule": "mdi:calendar-clock",
+          "parked_by_user": "mdi:home-account",
+          "parked_max_day_cutting": "mdi:timer-check",
+          "parked_by_rain_guard": "mdi:weather-pouring",
+          "parked_by_frost_guard": "mdi:snowflake",
+          "energy_saving_mode": "mdi:leaf",
+          "starting_up": "mdi:power"
+        }
+      },
+      "status": {
+        "default": "mdi:information-outline"
+      },
+      "next_start": {
+        "default": "mdi:clock-start"
+      },
+      "last_seen": {
+        "default": "mdi:clock-check-outline"
+      },
+      "cutting_time": {
+        "default": "mdi:timer"
+      },
+      "running_time": {
+        "default": "mdi:timer-outline"
+      },
+      "charging_time": {
+        "default": "mdi:battery-clock"
+      },
+      "distance": {
+        "default": "mdi:map-marker-distance"
+      },
+      "error_count": {
+        "default": "mdi:alert-circle-outline"
+      },
+      "last_error": {
+        "default": "mdi:alert",
+        "state": {
+          "No error": "mdi:check-circle-outline"
+        }
+      },
+      "software_version": {
+        "default": "mdi:chip"
+      },
+      "wifi_signal": {
+        "default": "mdi:wifi"
+      },
+      "lte_signal": {
+        "default": "mdi:signal"
+      },
+      "latitude": {
+        "default": "mdi:latitude"
+      },
+      "longitude": {
+        "default": "mdi:longitude"
+      }
+    },
+    "binary_sensor": {
+      "online": {
+        "default": "mdi:cloud-check",
+        "state": {
+          "off": "mdi:cloud-off-outline"
+        }
+      }
+    },
+    "button": {
+      "start": {
+        "default": "mdi:play"
+      },
+      "pause": {
+        "default": "mdi:pause"
+      },
+      "park_until_further_notice": {
+        "default": "mdi:home-import-outline"
+      },
+      "park_rest_of_day": {
+        "default": "mdi:home-clock"
+      },
+      "set_clock": {
+        "default": "mdi:clock-edit-outline"
+      }
+    },
+    "calendar": {
+      "schedule": {
+        "default": "mdi:calendar-clock"
+      }
+    }
+  },
+  "services": {
+    "park": {
+      "service": "mdi:home-import-outline"
+    },
+    "set_schedule": {
+      "service": "mdi:calendar-edit"
+    },
+    "start_nonstop_mowing": {
+      "service": "mdi:all-inclusive"
+    },
+    "cancel_nonstop_mowing": {
+      "service": "mdi:calendar-check"
+    },
+    "set_clock": {
+      "service": "mdi:clock-edit-outline"
+    }
+  }
+}

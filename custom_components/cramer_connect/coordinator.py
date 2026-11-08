@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
-from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -14,10 +14,14 @@ from .api import (
     CramerConnectApiError,
     CramerConnectAuthError,
     CramerConnectClient,
-    CramerDevice,
     CramerConnectTokenExpiredError,
+    CramerDevice,
+    Schedule,
 )
 from .const import DOMAIN, SCAN_INTERVAL_SECONDS
+
+# How long a just-written schedule wins over the (possibly stale) cloud copy
+PENDING_SCHEDULE_TTL_S = 120
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +34,7 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         auth: CramerAuth,
         username: str,
         password: str,
+        pin: str | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -41,6 +46,9 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         self._auth = auth
         self._username = username
         self._password = password
+        self.pin = pin or None
+        # device_id -> (schedule written by us, monotonic expiry)
+        self._pending_schedules: dict[str, tuple[Schedule, float]] = {}
 
     @property
     def client(self) -> CramerConnectClient:
@@ -54,34 +62,66 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         await self._ensure_auth()
         try:
             devices = await self._client.get_devices(self._auth)
+        except CramerConnectAuthError:
+            # Token rejected before its nominal expiry — log in again once.
+            await self.force_reauth()
+            try:
+                devices = await self._client.get_devices(self._auth)
+            except CramerConnectAuthError as err:
+                raise ConfigEntryAuthFailed(str(err)) from err
+            except CramerConnectApiError as err:
+                raise UpdateFailed(str(err)) from err
+        except CramerConnectApiError as err:
+            raise UpdateFailed(str(err)) from err
+
+        data = {d.device_id: d for d in devices}
+        self._apply_pending_schedules(data)
+        return data
+
+    def _apply_pending_schedules(self, data: dict[str, CramerDevice]) -> None:
+        now = time.monotonic()
+        for device_id, (schedule, expires) in list(self._pending_schedules.items()):
+            device = data.get(device_id)
+            if device is None or now > expires or device.schedule == schedule:
+                del self._pending_schedules[device_id]
+            else:
+                device.schedule = schedule
+
+    def set_pending_schedule(self, device_id: str, schedule: Schedule) -> None:
+        """Show a schedule we just sent until the cloud reports it."""
+        self._pending_schedules[device_id] = (
+            schedule, time.monotonic() + PENDING_SCHEDULE_TTL_S,
+        )
+        if self.data and device_id in self.data:
+            self.data[device_id].schedule = schedule
+            self.async_update_listeners()
+
+    async def async_send_command(self, device_id: str, payload_hex: str) -> None:
+        """Send an MQTT command, re-authenticating once if it is refused."""
+        try:
+            await self._client.send_command(self._auth, device_id, payload_hex)
+        except CramerConnectTokenExpiredError:
+            _LOGGER.debug("MQTT login refused, re-authenticating and retrying")
+            await self.force_reauth()
+            await self._client.send_command(self._auth, device_id, payload_hex)
+
+    async def force_reauth(self) -> None:
+        """Re-authenticate unconditionally and update stored tokens."""
+        _LOGGER.debug("Forcing re-authentication")
+        try:
+            self._auth = await self._client.authenticate(
+                self._username, self._password
+            )
         except CramerConnectAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except CramerConnectApiError as err:
             raise UpdateFailed(str(err)) from err
 
-        return {d.device_id: d for d in devices}
-
-    async def force_reauth(self) -> None:
-        """Re-authenticate unconditionally and update stored tokens."""
-        _LOGGER.debug("Forcing re-authentication (token expired)")
-        try:
-            self._auth = await self._client.authenticate(
-                self._username, self._password
-            )
-        except CramerConnectAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
-
     async def _ensure_auth(self) -> None:
-        guc_age = (datetime.now() - self._auth.fetched_at).total_seconds()
-        # Re-authenticate when GUC token is about to expire OR when xlink token
-        # is also near expiry (xlink tokens expire in ~2 h, same refresh cycle).
-        if guc_age < self._auth.guc_expires_in - 60:
+        age = (datetime.now() - self._auth.fetched_at).total_seconds()
+        # auth.expires_in accounts for both the GUC and the xlink token
+        # (xlink tokens expire after 2 h regardless of the GUC lifetime).
+        if age < self._auth.expires_in - 60:
             return
-
         _LOGGER.debug("Token expiring, re-authenticating")
-        try:
-            self._auth = await self._client.authenticate(
-                self._username, self._password
-            )
-        except CramerConnectAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
+        await self.force_reauth()

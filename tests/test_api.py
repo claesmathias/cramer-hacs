@@ -408,6 +408,7 @@ class TestGetDevices:
             is_fleet_user=False,
             fleet_token="",
             organization_id="",
+            guc_token="my-guc-token",
             xlink_token="my-xlink-token",
             xlink_user_id="u-99",
         )
@@ -415,6 +416,7 @@ class TestGetDevices:
 
         _, kwargs = session.get.call_args
         assert kwargs["headers"]["Access-Token"] == "my-xlink-token"
+        assert kwargs["headers"]["Authorization"] == "Bearer my-guc-token"
         assert kwargs["headers"]["Xlink-User-Id"] == "u-99"
 
     async def test_xlink_401_raises_auth_error(self):
@@ -462,6 +464,25 @@ class TestGetDevices:
         dp32_no_sched = _j.dumps({
             "request": {"mower_main_state": 7, "battery_status": 100,
                         "next_start": 4294967295}
+        })
+        state_resp = {"datapoints": {"32": {"value": dp32_no_sched}}}
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, state_resp),
+        )
+        devices = await client.get_devices(consumer_auth)
+        assert devices[0].next_start_ts is None
+
+    async def test_xlink_zero_next_start_is_none(self):
+        """next_start = 0 means the mower has no actionable next start."""
+        import json as _j
+        dp32_no_sched = _j.dumps({
+            "request": {"mower_main_state": 2, "battery_status": 100,
+                        "next_start": 0}
         })
         state_resp = {"datapoints": {"32": {"value": dp32_no_sched}}}
         consumer_auth = _auth(
@@ -605,3 +626,482 @@ class TestCramerDevice:
             state=None, battery=None, is_online=False,
         )
         assert d.is_mower is False
+
+
+# ---------------------------------------------------------------------------
+# Additions for app 4.5.0 parity: fleet xlink token, dp8/dp32/dp33, MQTT
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+from custom_components.cramer_connect.api import (  # noqa: E402
+    CramerConnectTokenExpiredError,
+    _mqtt_publish,
+    build_park_command,
+    build_start_command,
+    build_stop_command,
+)
+from custom_components.cramer_connect.coordinator import (  # noqa: E402
+    CramerConnectCoordinator,
+)
+
+FLEET_XLINK_OK = {
+    "authString": "fleet-authorize",
+    "authorized": True,
+    "token": "fleet-xlink-token",
+    "xlinkId": "987654",
+}
+
+
+class TestFleetXlinkToken:
+    async def test_fleet_login_fetches_xlink_credentials(self):
+        session = MagicMock()
+        session.post = MagicMock(side_effect=[
+            _make_response(200, IS_FLEET_TRUE),
+            _make_response(200, FLEET_LOGIN_OK),
+            _make_response(200, GUC_TOKEN_OK),
+            _make_response(200, FLEET_XLINK_OK),
+        ])
+        auth = await CramerConnectClient(session).authenticate("a@b.c", "pw")
+        assert auth.xlink_token == "fleet-xlink-token"
+        assert auth.xlink_user_id == "987654"
+        assert auth.xlink_authorize == "fleet-authorize"
+        assert auth.has_mqtt_credentials
+        url = session.post.call_args_list[3][0][0]
+        assert url.endswith("/api/account/XlinkToken")
+        assert session.post.call_args_list[3][1]["json"] == {"organizationId": "org-123"}
+
+    async def test_xlink_token_failure_is_not_fatal(self):
+        client = _client_with_posts(
+            _make_response(200, IS_FLEET_TRUE),
+            _make_response(200, FLEET_LOGIN_OK),
+            _make_response(200, GUC_TOKEN_OK),
+            _make_response(500, {"error": "boom"}),
+        )
+        auth = await client.authenticate("a@b.c", "pw")
+        assert auth.guc_token == "guc-token-xyz"
+        assert auth.xlink_token == ""
+        assert not auth.has_mqtt_credentials
+
+    async def test_fleet_devices_enriched_when_xlink_token_present(self):
+        state = {"datapoints": {"32": {"value": DP32_VALUE}}}
+        client = _client_with_gets(
+            _make_response(200, DEVICE_LIST_OK),
+            _make_response(200, state),
+        )
+        auth = _auth(xlink_token="t", xlink_user_id="u", xlink_authorize="a")
+        devices = await client.get_devices(auth)
+        assert devices[0].source_for_next_start == 2
+
+
+class TestAuthExpiry:
+    def test_consumer_expiry_capped_by_xlink_lifetime(self):
+        assert _auth(guc_expires_in=86400, xlink_token="x").expires_in == 7200
+
+    def test_shorter_guc_wins(self):
+        assert _auth(guc_expires_in=3600, xlink_token="x").expires_in == 3600
+
+    def test_fleet_without_xlink_uses_guc(self):
+        assert _auth(guc_expires_in=86400).expires_in == 86400
+
+
+class TestExtraDatapoints:
+    async def _device_from(self, datapoints):
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, {"datapoints": datapoints}),
+        )
+        return (await client.get_devices(consumer_auth))[0]
+
+    async def test_source_for_next_start(self):
+        dev = await self._device_from({"32": {"value": DP32_VALUE}})
+        assert dev.source_for_next_start == 2
+        assert dev.next_start_reason == "parked_by_schedule"
+
+    async def test_security_level_from_dp8(self):
+        dp8 = json.dumps({"response": {"return_code": 0, "security_level": 1}})
+        dev = await self._device_from({"8": {"value": dp8}})
+        assert dev.security_level == 1
+        assert dev.requires_pin
+
+    async def test_security_level_ignored_on_error_return_code(self):
+        dp8 = json.dumps({"response": {"return_code": 3, "security_level": 1}})
+        dev = await self._device_from({"8": {"value": dp8}})
+        assert dev.security_level is None
+        assert not dev.requires_pin
+
+    async def test_last_error_from_dp33(self):
+        dp33 = json.dumps({"request": {"event_id": 47, "request_time": "2026-06-01T08:00:00Z"}})
+        dev = await self._device_from({"33": {"value": dp33}})
+        assert dev.last_error_code == 47
+        assert dev.last_error == "Battery empty."
+        assert dev.last_error_time == "2026-06-01T08:00:00Z"
+
+    async def test_signed_minus_one_next_start_is_none(self):
+        dp32 = json.dumps({"request": {"mower_main_state": 2, "next_start": -1}})
+        dev = await self._device_from({"32": {"value": dp32}})
+        assert dev.next_start_ts is None
+
+
+class TestCommandBuilders:
+    def test_start_without_pin(self):
+        assert build_start_command() == "0007000d003a6000A007e4000400000000"
+
+    def test_start_with_pin(self):
+        assert build_start_command("1234") == "0007000d003a6000A007e400040000d204"
+
+    def test_park_forever(self):
+        assert build_park_command() == "0007000b003e6000A005e60002feff"
+
+    def test_park_two_hours(self):
+        assert build_park_command(120) == "0007000b003e6000A005e600027800"
+
+    @pytest.mark.parametrize("minutes", [0, -5, 0xFFFE, 100000])
+    def test_park_out_of_range(self, minutes):
+        with pytest.raises(ValueError):
+            build_park_command(minutes)
+
+    def test_stop(self):
+        dev = CramerDevice("1", "p", "n", "", "", "RLM1", "4", 50, True)
+        assert build_stop_command(dev) == "0007000b00386000A005e200020000"
+
+    def test_stop_secondary_area(self):
+        dev = CramerDevice("1", "p", "n", "", "", "RLM1", "12", 50, True)
+        assert build_stop_command(dev) == "0007000c00366000A0064a0103000000"
+
+    def test_rlm2_not_remote_controllable(self):
+        dev = CramerDevice("1", "p", "n", "", "", "RLM2", "4", 50, True)
+        assert not dev.supports_remote_control
+
+
+async def _fake_broker(connack_rc: int = 0):
+    """Start a local TCP server that speaks just enough MQTT 3.1.1."""
+    received: dict = {}
+
+    async def read_packet(reader):
+        header = (await reader.readexactly(1))[0]
+        mult, length = 1, 0
+        while True:
+            b = (await reader.readexactly(1))[0]
+            length += (b & 0x7F) * mult
+            if not b & 0x80:
+                break
+            mult *= 128
+        return header, await reader.readexactly(length)
+
+    async def handle(reader, writer):
+        header, body = await read_packet(reader)
+        received["connect"] = (header, body)
+        writer.write(bytes([0x20, 0x02, 0x00, connack_rc]))
+        await writer.drain()
+        if connack_rc:
+            writer.close()
+            return
+        header, body = await read_packet(reader)
+        received["publish"] = (header, body)
+        writer.write(bytes([0x40, 0x02]) + body[2 + int.from_bytes(body[:2], "big"):][:2])
+        await writer.drain()
+        received["disconnect"] = await reader.readexactly(2)
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    return server, server.sockets[0].getsockname()[1], received
+
+
+class TestMqttProtocol:
+    async def test_publish_round_trip(self):
+        server, port, received = await _fake_broker()
+        async with server:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            payload = bytes.fromhex(build_start_command())
+            await _mqtt_publish(reader, writer, "X:APP;A:4;V:1;RES:abc;", "user-1",
+                                "md5pass", "$7/100000001", payload)
+            writer.close()
+
+        header, body = received["connect"]
+        assert header == 0x10
+        assert body[:6] == b"\x00\x04MQTT"
+        assert body[6] == 4 and body[7] == 0xC2
+        assert b"user-1" in body and b"md5pass" in body
+
+        header, body = received["publish"]
+        assert header == 0x32  # QoS 1
+        tlen = int.from_bytes(body[:2], "big")
+        assert body[2:2 + tlen] == b"$7/100000001"
+        assert body[2 + tlen + 2:] == payload
+        assert received["disconnect"] == b"\xe0\x00"
+
+    async def test_bad_credentials_raise_token_expired(self):
+        server, port, _ = await _fake_broker(connack_rc=5)
+        async with server:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            with pytest.raises(CramerConnectTokenExpiredError):
+                await _mqtt_publish(reader, writer, "c", "u", "p", "$7/1", b"\x00")
+            writer.close()
+
+    async def test_server_unavailable_raises_api_error(self):
+        server, port, _ = await _fake_broker(connack_rc=3)
+        async with server:
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            with pytest.raises(CramerConnectApiError) as exc:
+                await _mqtt_publish(reader, writer, "c", "u", "p", "$7/1", b"\x00")
+            assert not isinstance(exc.value, CramerConnectTokenExpiredError)
+            writer.close()
+
+    async def test_send_command_requires_credentials(self):
+        client = CramerConnectClient(MagicMock())
+        with pytest.raises(CramerConnectApiError):
+            await client.send_command(_auth(), "1", "00")
+
+
+class TestCoordinatorReauth:
+    def _coord(self, client):
+        coord = CramerConnectCoordinator.__new__(CramerConnectCoordinator)
+        coord._client = client
+        coord._auth = _auth()
+        coord._username = "u"
+        coord._password = "p"
+        coord.pin = None
+        coord._pending_schedules = {}
+        return coord
+
+    async def test_auth_error_triggers_single_reauth(self):
+        dev = CramerDevice("1", "p", "n", "", "", "RLM1", "4", 50, True)
+        client = MagicMock()
+        client.get_devices = AsyncMock(side_effect=[CramerConnectAuthError("401"), [dev]])
+        client.authenticate = AsyncMock(return_value=_auth(guc_token="fresh"))
+        coord = self._coord(client)
+        data = await coord._async_update_data()
+        assert data == {"1": dev}
+        client.authenticate.assert_awaited_once()
+        assert coord.auth.guc_token == "fresh"
+
+    async def test_command_retried_after_mqtt_login_refused(self):
+        client = MagicMock()
+        client.send_command = AsyncMock(side_effect=[CramerConnectTokenExpiredError("x"), None])
+        client.authenticate = AsyncMock(return_value=_auth(guc_token="fresh"))
+        coord = self._coord(client)
+        await coord.async_send_command("1", "00")
+        assert client.send_command.await_count == 2
+        client.authenticate.assert_awaited_once()
+
+
+class TestUiDatapoints:
+    async def _device_from(self, datapoints):
+        consumer_auth = _auth(
+            is_fleet_user=False, fleet_token="", organization_id="",
+            xlink_token="tok", xlink_user_id="uid",
+        )
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, {"datapoints": datapoints}),
+        )
+        return (await client.get_devices(consumer_auth))[0]
+
+    async def test_last_seen_from_dp32_report_time(self):
+        dev = await self._device_from({"32": {"report_time": "2026-11-05T04:33:05.273Z", "value": DP32_VALUE}})
+        assert dev.last_seen.isoformat() == "2026-11-05T04:33:05.273000+00:00"
+
+    async def test_signal_quality(self):
+        dp31 = json.dumps({"response": {"return_code": 0, "signal_quality": 83}})
+        dp36 = json.dumps({"response": {"return_code": 0, "gprs_lte_signal_quality": 93}})
+        dev = await self._device_from({"31": {"value": dp31}, "36": {"value": dp36}})
+        assert dev.wifi_signal == 83 and dev.lte_signal == 93
+
+    async def test_installed_version_from_dp117_request(self):
+        dev = await self._device_from({
+            "117": {"value": DP117_VALUE},
+            "246": {"value": "ignored"},
+        })
+        assert dev.software_version == "13.5.100000000"
+
+    async def test_dp246_fallback(self):
+        dev = await self._device_from({"246": {"value": "13.5.7"}})
+        assert dev.software_version == "13.5.7"
+
+    async def test_latest_version_from_dp119_header(self):
+        # Real header from a mower: "#RLM@", 13.5, build 1775741529
+        header = "23524c4d40000d0559aad7696400020100c40010003c07003f7dd655"
+        dp119 = json.dumps({"response": {"return_code": 0, "program_header": header}})
+        dev = await self._device_from({"119": {"value": dp119}})
+        assert dev.latest_software_version == "13.5.1775741529"
+
+    async def test_raw_datapoints_kept_for_diagnostics(self):
+        dev = await self._device_from({"32": {"value": DP32_VALUE}})
+        assert "32" in dev.datapoints
+
+
+class TestDiagnostics:
+    def test_location_and_ids_redacted(self):
+        from custom_components.cramer_connect.diagnostics import device_diagnostics
+        dp34 = json.dumps({"request": {"latitude": "50.8", "longitude": "4.2"}})
+        dev = CramerDevice("1", "p", "Test Mower", "SN1", "aa", "RLM1", "4", 50, True,
+                           latitude=50.8, longitude=4.2,
+                           datapoints={"34": {"value": dp34}})
+        out = device_diagnostics(dev)
+        assert out["latitude"] == "**REDACTED**"
+        assert out["serial_number"] == "**REDACTED**"
+        assert out["name"] == "**REDACTED**"
+        assert out["datapoints"]["34"]["value"]["request"]["latitude"] == "**REDACTED**"
+        assert out["state_label"] == "mowing"
+
+
+# ---------------------------------------------------------------------------
+# Schedule (dp[125]) parsing and commands
+# ---------------------------------------------------------------------------
+
+from custom_components.cramer_connect.api import (  # noqa: E402
+    OFF_TIMER,
+    ScheduleTimer,
+    build_nonstop_command,
+    build_schedule_command,
+    build_set_clock_command,
+    parse_schedule,
+)
+
+_DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _dp125_response(overrides: dict | None = None) -> dict:
+    """dp[125] response like the real one: only Tuesday 10:00 for 420 min."""
+    resp = {"return_code": 0}
+    for day in _DAYS:
+        for n in (1, 2):
+            p = f"{day}_timer_{n}_"
+            resp.update({p + "start_time_hour": 0, p + "start_time_minute": 0,
+                         p + "length_minutes": 0, p + "timer_mode": 0})
+    resp.update({"tuesday_timer_1_start_time_hour": 10,
+                 "tuesday_timer_1_length_minutes": 420,
+                 "tuesday_timer_1_timer_mode": 1})
+    resp.update(overrides or {})
+    return resp
+
+
+def _week(**days) -> tuple:
+    return tuple(days.get(d, (OFF_TIMER, OFF_TIMER)) for d in _DAYS)
+
+
+class TestScheduleParsing:
+    def test_parse_real_layout(self):
+        sched = parse_schedule(_dp125_response())
+        assert sched[1][0] == ScheduleTimer(10, 0, 420, True)
+        assert not sched[0][0].active and not sched[1][1].active
+
+    def test_missing_key_returns_none(self):
+        resp = _dp125_response()
+        del resp["sunday_timer_2_timer_mode"]
+        assert parse_schedule(resp) is None
+
+    async def test_schedule_from_device_state(self):
+        dp125 = json.dumps({"request": {}, "response": _dp125_response()})
+        consumer_auth = _auth(is_fleet_user=False, fleet_token="", organization_id="",
+                              xlink_token="tok", xlink_user_id="uid")
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, {"datapoints": {"125": {"value": dp125}}}),
+        )
+        dev = (await client.get_devices(consumer_auth))[0]
+        assert dev.schedule[1][0].length_minutes == 420
+
+
+class TestScheduleCommand:
+    def test_round_trip_matches_app_format(self):
+        sched = _week(tuesday=(ScheduleTimer(10, 0, 420, True), OFF_TIMER))
+        cmd = build_schedule_command(sched)
+        assert cmd.startswith("0007004f00326000A049400146")
+        body = bytes.fromhex(cmd[len("0007004f00326000A049400146"):])
+        assert len(body) == 70
+        # Tuesday timer 1: 0a 00 a401 01
+        assert body[10:15] == bytes([0x0A, 0x00, 0xA4, 0x01, 0x01])
+        assert body[:10] == bytes(10)
+
+    def test_header_length_fields_consistent(self):
+        cmd = bytes.fromhex(build_schedule_command(_week()))
+        assert cmd[3] == len(cmd) - 4  # 0x4f
+        assert cmd[9] == len(cmd) - 10  # 0x49
+
+    def test_disabled_timer_sent_as_off(self):
+        sched = _week(monday=(ScheduleTimer(9, 0, 60, False), OFF_TIMER))
+        body = bytes.fromhex(build_schedule_command(sched)[26:])
+        assert body[2:5] == bytes([0, 0, 0])
+
+    def test_overlap_rejected(self):
+        sched = _week(monday=(ScheduleTimer(9, 0, 120, True), ScheduleTimer(10, 0, 60, True)))
+        with pytest.raises(ValueError, match="overlap"):
+            build_schedule_command(sched)
+
+    def test_past_midnight_rejected(self):
+        sched = _week(monday=(ScheduleTimer(23, 0, 120, True), OFF_TIMER))
+        with pytest.raises(ValueError, match="midnight"):
+            build_schedule_command(sched)
+
+    def test_until_midnight_allowed(self):
+        sched = _week(monday=(ScheduleTimer(22, 0, 120, True), OFF_TIMER))
+        build_schedule_command(sched)
+
+
+class TestNonstopAndClock:
+    def test_nonstop_two_days(self):
+        # 2880 minutes = 0x0b40 -> "400b", then "01" (app preset "2 days")
+        assert build_nonstop_command(2) == "0007000c00366000A0064a0103400b01"
+
+    def test_cancel_nonstop(self):
+        assert build_nonstop_command(None) == "0007000c00366000A0064a0103000000"
+
+    @pytest.mark.parametrize("days", [0, 25])
+    def test_nonstop_out_of_range(self, days):
+        with pytest.raises(ValueError):
+            build_nonstop_command(days)
+
+    def test_set_clock_positive_offset(self):
+        cmd = build_set_clock_command(0x69000000, 3600)
+        assert cmd == "0007001100566000A00b9a0008" + "00000069" + "100e0000"
+
+    def test_set_clock_negative_offset(self):
+        # -18000 s (UTC-5) is two's complement, little-endian, as in the app
+        cmd = build_set_clock_command(0x69000000, -18000)
+        assert cmd.endswith("b0b9ffff")
+
+    def test_nonstop_flag_from_source(self):
+        dev = CramerDevice("1", "p", "n", "", "", "RLM1", "4", 50, True,
+                           source_for_next_start=52)
+        assert dev.nonstop_mowing
+
+
+class TestPendingSchedule:
+    def _coord(self):
+        coord = CramerConnectCoordinator.__new__(CramerConnectCoordinator)
+        coord._pending_schedules = {}
+        coord.data = {}
+        return coord
+
+    def _dev(self, schedule):
+        return CramerDevice("1", "p", "n", "", "", "RLM1", "4", 50, True, schedule=schedule)
+
+    def test_pending_overrides_stale_cloud_copy(self):
+        coord = self._coord()
+        new = _week(monday=(ScheduleTimer(9, 0, 60, True), OFF_TIMER))
+        coord.set_pending_schedule("1", new)
+        data = {"1": self._dev(_week())}
+        coord._apply_pending_schedules(data)
+        assert data["1"].schedule == new
+        assert "1" in coord._pending_schedules
+
+    def test_pending_cleared_once_cloud_matches(self):
+        coord = self._coord()
+        new = _week(monday=(ScheduleTimer(9, 0, 60, True), OFF_TIMER))
+        coord.set_pending_schedule("1", new)
+        coord._apply_pending_schedules({"1": self._dev(new)})
+        assert coord._pending_schedules == {}
+
+    def test_pending_expires(self):
+        coord = self._coord()
+        new = _week(monday=(ScheduleTimer(9, 0, 60, True), OFF_TIMER))
+        coord._pending_schedules["1"] = (new, 0.0)  # already expired
+        data = {"1": self._dev(_week())}
+        coord._apply_pending_schedules(data)
+        assert data["1"].schedule == _week()

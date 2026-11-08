@@ -8,6 +8,13 @@
           "username": "Email",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Cramer Connect",
+        "description": "The password for {username} is no longer accepted. Enter the current password.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -16,7 +23,198 @@
       "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "Account is already configured."
+      "already_configured": "Account is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Cramer Connect options",
+        "description": "Mowers with a security level that requires a PIN code only accept a start command together with the PIN.",
+        "data": {
+          "pin": "Mower PIN code"
+        }
+      }
+    },
+    "error": {
+      "invalid_pin": "The PIN code must be 1 to 5 digits (0-65535)."
+    }
+  },
+  "services": {
+    "park": {
+      "name": "Park",
+      "description": "Send the mower to the charging station and park it.",
+      "fields": {
+        "duration": {
+          "name": "Duration",
+          "description": "Minutes to park. Leave empty to park until further notice."
+        }
+      }
+    },
+    "set_schedule": {
+      "name": "Set schedule",
+      "description": "Set the mowing timers for one or more weekdays. Days you don't select keep their timers. Leave a timer's times empty to turn it off. An end time of 00:00 means midnight.",
+      "fields": {
+        "days": {
+          "name": "Days",
+          "description": "Weekdays to apply the timers to."
+        },
+        "timer_1_start": {
+          "name": "Timer 1 start",
+          "description": "Start of the first mowing window."
+        },
+        "timer_1_end": {
+          "name": "Timer 1 end",
+          "description": "End of the first mowing window."
+        },
+        "timer_2_start": {
+          "name": "Timer 2 start",
+          "description": "Start of the second mowing window."
+        },
+        "timer_2_end": {
+          "name": "Timer 2 end",
+          "description": "End of the second mowing window."
+        }
+      }
+    },
+    "start_nonstop_mowing": {
+      "name": "Start nonstop mowing",
+      "description": "Mow continuously and ignore the schedule for a number of days.",
+      "fields": {
+        "days": {
+          "name": "Days",
+          "description": "How many days to mow nonstop (1-24)."
+        }
+      }
+    },
+    "cancel_nonstop_mowing": {
+      "name": "Cancel nonstop mowing",
+      "description": "Stop nonstop mowing and follow the schedule again."
+    },
+    "set_clock": {
+      "name": "Set clock",
+      "description": "Set the mower's clock to Home Assistant's time and time zone. The schedule depends on a correct clock."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "state": {
+        "name": "State",
+        "state": {
+          "starting_up": "Starting up",
+          "stop_button_pressed": "Stop button pressed",
+          "parked": "Parked",
+          "paused": "Paused",
+          "mowing": "Mowing",
+          "leaving_charging_station": "Leaving charging station",
+          "searching_charging_station": "Searching for charging station",
+          "charging": "Charging",
+          "error": "Error",
+          "fatal_error": "Fatal error",
+          "recovery_state": "Recovery state",
+          "alarm_state": "Alarm",
+          "mowing_secondary_area": "Mowing secondary area",
+          "parked_by_schedule": "Parked by schedule",
+          "parked_max_day_cutting": "Max day cutting time reached",
+          "parked_by_user": "Parked by user",
+          "parked_by_rain_guard": "Parked by rain guard",
+          "parked_by_frost_guard": "Parked by frost guard",
+          "energy_saving_mode": "Energy saving mode"
+        },
+        "state_attributes": {
+          "reason": {
+            "name": "Reason"
+          }
+        }
+      },
+      "status": {
+        "name": "Status"
+      },
+      "next_start": {
+        "name": "Next start"
+      },
+      "last_seen": {
+        "name": "Last seen"
+      },
+      "cutting_time": {
+        "name": "Total mowing time"
+      },
+      "running_time": {
+        "name": "Total running time"
+      },
+      "charging_time": {
+        "name": "Total charging time"
+      },
+      "distance": {
+        "name": "Total mowing distance"
+      },
+      "error_count": {
+        "name": "Error count"
+      },
+      "last_error": {
+        "name": "Last error"
+      },
+      "software_version": {
+        "name": "Software version"
+      },
+      "wifi_signal": {
+        "name": "WiFi signal"
+      },
+      "lte_signal": {
+        "name": "Mobile signal"
+      },
+      "latitude": {
+        "name": "Latitude"
+      },
+      "longitude": {
+        "name": "Longitude"
+      }
+    },
+    "binary_sensor": {
+      "online": {
+        "name": "Online"
+      }
+    },
+    "button": {
+      "start": {
+        "name": "Start mowing"
+      },
+      "pause": {
+        "name": "Pause"
+      },
+      "park_until_further_notice": {
+        "name": "Park until further notice"
+      },
+      "park_rest_of_day": {
+        "name": "Park for the rest of the day"
+      },
+      "set_clock": {
+        "name": "Set clock"
+      }
+    },
+    "update": {
+      "firmware": {
+        "name": "Firmware"
+      }
+    },
+    "calendar": {
+      "schedule": {
+        "name": "Mowing schedule"
+      }
+    }
+  },
+  "selector": {
+    "days": {
+      "options": {
+        "monday": "Monday",
+        "tuesday": "Tuesday",
+        "wednesday": "Wednesday",
+        "thursday": "Thursday",
+        "friday": "Friday",
+        "saturday": "Saturday",
+        "sunday": "Sunday"
+      }
     }
   }
 }

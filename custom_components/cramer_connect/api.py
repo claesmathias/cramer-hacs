@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import secrets
+import ssl
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,6 +15,20 @@ from typing import Any
 import aiohttp
 
 from .const import (
+    CMD_NONSTOP_CANCEL,
+    CMD_NONSTOP_PREFIX,
+    CMD_SCHEDULE_PREFIX,
+    CMD_SET_CLOCK_PREFIX,
+    NONSTOP_MAX_DAYS,
+    NONSTOP_SOURCES,
+    SCHEDULE_DAYS,
+    SCHEDULE_TIMERS_PER_DAY,
+    CMD_PARK_PREFIX,
+    CMD_START,
+    CMD_START_PREFIX,
+    CMD_STOP,
+    CMD_STOP_SECONDARY_AREA,
+    PARK_UNTIL_FURTHER_NOTICE,
     APP_APPLICATION_KEY,
     APP_BRAND,
     APP_NAME,
@@ -20,14 +38,123 @@ from .const import (
     GUC_CLIENT_SECRET,
     GUC_SCOPE,
     GUC_URL,
+    MOWER_ERROR_MAP,
     MOWER_STATE_MAP,
+    PARKED_REASON_STATES,
+    MQTT_COMMAND_TOPIC,
+    MQTT_HOST,
+    MQTT_PORT,
+    NEXT_START_SOURCE_MAP,
+    PIN_REQUIRED_SECURITY_LEVELS,
+    PRODUCT_CODE_RLM2,
     ROBOTIC_MOWER_PRODUCT_CODES,
-    SIGNALR_URL,
     XLINK_CORP_ID,
     XLINK_URL,
 )
 
+# xlink access tokens are valid for 2 hours (the app hardcodes 7200 s)
+XLINK_TOKEN_LIFETIME_S = 7200
+
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ScheduleTimer:
+    """One timer slot of the weekly schedule (dp[125])."""
+
+    start_hour: int = 0
+    start_minute: int = 0
+    length_minutes: int = 0
+    enabled: bool = False
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and self.length_minutes > 0
+
+    @property
+    def start_minutes(self) -> int:
+        return self.start_hour * 60 + self.start_minute
+
+    @property
+    def end_minutes(self) -> int:
+        return self.start_minutes + self.length_minutes
+
+
+# 7 days (Monday first) x 2 timers
+Schedule = tuple[tuple[ScheduleTimer, ...], ...]
+
+OFF_TIMER = ScheduleTimer()
+
+
+def parse_schedule(response: dict[str, Any]) -> Schedule | None:
+    """Parse the dp[125] response object into a Schedule."""
+    days = []
+    for day in SCHEDULE_DAYS:
+        timers = []
+        for n in range(1, SCHEDULE_TIMERS_PER_DAY + 1):
+            prefix = f"{day}_timer_{n}_"
+            try:
+                timers.append(ScheduleTimer(
+                    start_hour=int(response[prefix + "start_time_hour"]),
+                    start_minute=int(response[prefix + "start_time_minute"]),
+                    length_minutes=int(response[prefix + "length_minutes"]),
+                    enabled=int(response[prefix + "timer_mode"]) == 1,
+                ))
+            except (KeyError, TypeError, ValueError):
+                return None
+        days.append(tuple(timers))
+    return tuple(days)
+
+
+def validate_day_timers(timers: tuple[ScheduleTimer, ...]) -> None:
+    """Apply the app's rules: within one day, end after start, no overlap."""
+    active = [t for t in timers if t.active]
+    for t in active:
+        if not (0 <= t.start_hour < 24 and 0 <= t.start_minute < 60):
+            raise ValueError("Start time out of range")
+        if t.end_minutes > 24 * 60:
+            raise ValueError("A timer must end before midnight")
+    if len(active) == 2:
+        a, b = sorted(active, key=lambda t: t.start_minutes)
+        if b.start_minutes < a.end_minutes:
+            raise ValueError("The two timers overlap")
+
+
+def build_schedule_command(schedule: Schedule) -> str:
+    """Full weekly schedule, as ScheduleEditActivity.save() sends it."""
+    if len(schedule) != len(SCHEDULE_DAYS):
+        raise ValueError("A schedule needs 7 days")
+    payload = ""
+    for timers in schedule:
+        if len(timers) != SCHEDULE_TIMERS_PER_DAY:
+            raise ValueError("Each day needs 2 timers")
+        validate_day_timers(timers)
+        for t in timers:
+            payload += (
+                f"{t.start_hour:02x}{t.start_minute:02x}"
+                + _le16(t.length_minutes if t.enabled else 0)
+                + ("01" if t.active else "00")
+            )
+    return CMD_SCHEDULE_PREFIX + payload
+
+
+def build_nonstop_command(days: int | None) -> str:
+    """Mow nonstop (ignoring the schedule) for `days`; None cancels."""
+    if days is None:
+        return CMD_NONSTOP_CANCEL
+    days = int(days)
+    if not 1 <= days <= NONSTOP_MAX_DAYS:
+        raise ValueError(f"Nonstop mowing must be 1-{NONSTOP_MAX_DAYS} days")
+    return CMD_NONSTOP_PREFIX + _le16(days * 1440) + "01"
+
+
+def build_set_clock_command(utc_epoch: int, utc_offset_s: int) -> str:
+    """Set the mower clock to `utc_epoch` with the local UTC offset."""
+    return (
+        CMD_SET_CLOCK_PREFIX
+        + (int(utc_epoch) & 0xFFFFFFFF).to_bytes(4, "little").hex()
+        + int(utc_offset_s).to_bytes(4, "little", signed=True).hex()
+    )
 
 
 @dataclass
@@ -58,13 +185,72 @@ class CramerDevice:
     sw_update_available: bool | None = None
     # Hardware model from dp[21]
     mower_model: str | None = None
+    # Reason for the current parked/charging state (dp[32] source_for_next_start)
+    source_for_next_start: int | None = None
+    # Security level from dp[8]; 1 or 9 means commands need the PIN code
+    security_level: int | None = None
+    # Last reported error from dp[33]
+    last_error_code: int | None = None
+    last_error_time: str | None = None
+    # When the mower last reported its state (dp[32] report_time)
+    last_seen: datetime | None = None
+    # Connection quality in % (dp[31] WiFi, dp[36] mobile network)
+    wifi_signal: int | None = None
+    lte_signal: int | None = None
+    # Firmware offered to the mower (dp[119] program header)
+    latest_software_version: str | None = None
+    # Weekly schedule from dp[125]
+    schedule: Schedule | None = None
+    # Raw datapoints from the last device-state call (for diagnostics)
+    datapoints: dict[str, Any] = field(default_factory=dict)
     # Per-device xlink authorize code (from subscribe/devices response)
     device_authorize: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
     def state_label(self) -> str:
+        """State as shown in the app; 'parked' is split into its reasons."""
+        if self.state == "2" and self.source_for_next_start in PARKED_REASON_STATES:
+            return PARKED_REASON_STATES[self.source_for_next_start]
         return MOWER_STATE_MAP.get(self.state or "", "unknown")
+
+    @property
+    def nonstop_mowing(self) -> bool:
+        """Mowing nonstop, ignoring the schedule (until next_start)."""
+        return self.source_for_next_start in NONSTOP_SOURCES
+
+    @property
+    def is_charging(self) -> bool:
+        return self.state == "7" or (
+            self.state == "2" and self.source_for_next_start == 1
+        )
+
+    @property
+    def next_start_reason(self) -> str | None:
+        """Why the mower is parked/charging (e.g. parked_by_schedule)."""
+        if self.source_for_next_start is None:
+            return None
+        return NEXT_START_SOURCE_MAP.get(self.source_for_next_start)
+
+    @property
+    def last_error(self) -> str | None:
+        """Human readable text of the last reported error."""
+        if self.last_error_code is None:
+            return None
+        if self.last_error_code <= 0:
+            return "Unknown error"
+        return MOWER_ERROR_MAP.get(
+            self.last_error_code, f"Error {self.last_error_code}"
+        )
+
+    @property
+    def requires_pin(self) -> bool:
+        return self.security_level in PIN_REQUIRED_SECURITY_LEVELS
+
+    @property
+    def supports_remote_control(self) -> bool:
+        """RLM2 is controlled over Bluetooth only — no cloud commands."""
+        return self.product_code != PRODUCT_CODE_RLM2
 
     @property
     def is_mower(self) -> bool:
@@ -91,6 +277,17 @@ class CramerAuth:
     xlink_refresh_token: str = ""
     fetched_at: datetime = field(default_factory=datetime.now)
 
+    @property
+    def expires_in(self) -> int:
+        """Seconds until the first of the tokens in use expires."""
+        if self.xlink_token:
+            return min(self.guc_expires_in, XLINK_TOKEN_LIFETIME_S)
+        return self.guc_expires_in
+
+    @property
+    def has_mqtt_credentials(self) -> bool:
+        return bool(self.xlink_user_id and self.xlink_authorize)
+
 
 class CramerConnectApiError(Exception):
     pass
@@ -116,9 +313,53 @@ def _base_headers() -> dict[str, str]:
     }
 
 
+def _parse_time(value: Any) -> datetime | None:
+    """Parse an ISO 8601 timestamp such as '2026-11-05T04:33:05.273Z'."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _le16(value: int) -> str:
+    """Little-endian uint16 hex, as StringUtils.getPin() in the app."""
+    return (value & 0xFFFF).to_bytes(2, "little").hex()
+
+
+def build_start_command(pin: str | int | None = None) -> str:
+    """Start/resume mowing; the PIN is required when security level is 1/9."""
+    if pin in (None, ""):
+        return CMD_START
+    return CMD_START_PREFIX + _le16(int(pin))
+
+
+def build_park_command(minutes: int | None = None) -> str:
+    """Park for `minutes` (None = until further notice)."""
+    if minutes is None:
+        return CMD_PARK_PREFIX + _le16(PARK_UNTIL_FURTHER_NOTICE)
+    minutes = int(minutes)
+    if not 1 <= minutes < PARK_UNTIL_FURTHER_NOTICE:
+        raise ValueError(f"Park duration out of range: {minutes}")
+    return CMD_PARK_PREFIX + _le16(minutes)
+
+
+def build_stop_command(device: "CramerDevice") -> str:
+    """Stop/pause; mowing the secondary area (state 12) has its own command."""
+    if device.state == "12":
+        return CMD_STOP_SECONDARY_AREA
+    return CMD_STOP
+
+
 class CramerConnectClient:
-    def __init__(self, session: aiohttp.ClientSession) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        ssl_context: ssl.SSLContext | None = None,
+    ) -> None:
         self._session = session
+        self._ssl_context = ssl_context
 
     async def authenticate(self, username: str, password: str) -> CramerAuth:
         """Full login flow, branching on fleet vs. consumer account."""
@@ -129,7 +370,7 @@ class CramerConnectClient:
             guc_token, guc_refresh, guc_expires = await self._get_guc_token(
                 fleet_token, organization_id
             )
-            return CramerAuth(
+            auth = CramerAuth(
                 fleet_token=fleet_token,
                 guc_token=guc_token,
                 guc_refresh_token=guc_refresh,
@@ -137,6 +378,17 @@ class CramerConnectClient:
                 guc_expires_in=guc_expires,
                 is_fleet_user=True,
             )
+            # The xlink token gives access to live datapoints and the MQTT
+            # command channel. Not fatal if it fails — read-only still works.
+            try:
+                (
+                    auth.xlink_token,
+                    auth.xlink_user_id,
+                    auth.xlink_authorize,
+                ) = await self._get_fleet_xlink_token(fleet_token, organization_id)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Fleet XlinkToken unavailable: %s", err)
+            return auth
         else:
             xlink_token, xlink_user_id, xlink_authorize, xlink_refresh = await self._xlink_login(username, password)
             guc_token, guc_refresh, guc_expires = await self._guc_direct_login(
@@ -250,6 +502,27 @@ class CramerConnectClient:
         expires_in = int(data.get("expireIn", 3600))
         return token, refresh, expires_in
 
+    async def _get_fleet_xlink_token(
+        self, fleet_token: str, organization_id: str
+    ) -> tuple[str, str, str]:
+        """Returns (xlink_token, xlink_user_id, authorize) for a fleet user."""
+        url = f"{FLEET_API_URL}/api/account/XlinkToken"
+        payload = {"organizationId": organization_id}
+        headers = {**_base_headers(), "Authorization": f"Bearer {fleet_token}"}
+        async with self._session.post(url, json=payload, headers=headers) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise CramerConnectApiError(
+                    f"XlinkToken request failed ({resp.status}): {text}"
+                )
+            data = await resp.json()
+        token = data.get("token") or ""
+        user_id = str(data.get("xlinkId") or "")
+        authorize = str(data.get("authString") or "")
+        if not token or not user_id:
+            raise CramerConnectApiError("Incomplete XlinkToken response")
+        return token, user_id, authorize
+
     async def _get_devices_fleet(self, auth: CramerAuth) -> list[CramerDevice]:
         url = f"{FLEET_API_URL}/api/devices/{auth.organization_id}/subscribed"
         headers = {**_base_headers(), "Authorization": f"Bearer {auth.fleet_token}"}
@@ -262,7 +535,10 @@ class CramerConnectClient:
                     f"Failed to get devices ({resp.status}): {text}"
                 )
             data: list[dict] = await resp.json()
-        return self._parse_devices(data)
+        devices = self._parse_devices(data)
+        if auth.xlink_token:
+            await self._enrich_devices(auth, devices)
+        return devices
 
     # ------------------------------------------------------------------
     # Consumer (non-fleet / xlink) path
@@ -353,6 +629,7 @@ class CramerConnectClient:
         url = f"{XLINK_URL}/v2/user/{auth.xlink_user_id}/subscribe/devices"
         headers = {
             **_base_headers(),
+            "Authorization": f"Bearer {auth.guc_token}",
             "Access-Token": auth.xlink_token,
             "Xlink-Access-Token": auth.xlink_token,
             "Xlink-User-Id": auth.xlink_user_id,
@@ -368,8 +645,13 @@ class CramerConnectClient:
             data: list[dict] = await resp.json()
 
         devices = self._parse_devices(data)
+        await self._enrich_devices(auth, devices)
+        return devices
 
-        # Enrich each device with live state + statistics
+    async def _enrich_devices(
+        self, auth: CramerAuth, devices: list[CramerDevice]
+    ) -> None:
+        """Enrich each device with live state + statistics (in place)."""
         enrichments = await asyncio.gather(
             *[self._get_xlink_device_state(auth, d) for d in devices],
             return_exceptions=True,
@@ -383,11 +665,13 @@ class CramerConnectClient:
             for key in ("state", "battery", "next_start_ts",
                         "cutting_time_s", "running_time_s", "charging_time_s", "error_count",
                         "distance_m", "latitude", "longitude",
-                        "software_version", "sw_update_available", "mower_model"):
+                        "software_version", "sw_update_available", "mower_model",
+                        "source_for_next_start", "security_level",
+                        "last_error_code", "last_error_time", "last_seen",
+                        "wifi_signal", "lte_signal", "latest_software_version",
+                        "schedule", "datapoints"):
                 if result.get(key) is not None:
                     setattr(device, key, result[key])
-
-        return devices
 
     async def _get_xlink_device_state(
         self, auth: CramerAuth, device: CramerDevice
@@ -397,16 +681,17 @@ class CramerConnectClient:
         Returns a dict with keys: state, battery, next_start_ts,
         cutting_time_s, running_time_s, error_count.  Missing values are None.
 
+        Datapoint 8  = security info (JSON string, 'response' object).
         Datapoint 32 = live mower state (JSON string, 'request' object).
+        Datapoint 33 = last error event (JSON string, 'request' object).
         Datapoint 48 = usage statistics (JSON string, 'response' object).
         """
-        import json as _json
-
         product_id = device.product_id or device.raw.get("product_id", "")
         device_id = device.device_id
         url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
         headers = {
             **_base_headers(),
+            "Authorization": f"Bearer {auth.guc_token}",
             "Access-Token": auth.xlink_token,
             "Xlink-Access-Token": auth.xlink_token,
             "Xlink-User-Id": auth.xlink_user_id,
@@ -417,28 +702,101 @@ class CramerConnectClient:
             data = await resp.json()
 
         datapoints = data.get("datapoints") or {}
-        result: dict[str, Any] = {}
+        result: dict[str, Any] = {"datapoints": datapoints} if datapoints else {}
 
         # --- dp[32]: live mower state ---
         dp32 = datapoints.get("32")
         if isinstance(dp32, dict) and isinstance(dp32.get("value"), str):
             try:
-                req = _json.loads(dp32["value"]).get("request") or {}
+                req = json.loads(dp32["value"]).get("request") or {}
                 if req.get("mower_main_state") is not None:
                     result["state"] = str(req["mower_main_state"])
                 if req.get("battery_status") is not None:
                     result["battery"] = int(req["battery_status"])
                 ns = req.get("next_start")
-                if ns is not None and int(ns) != 0xFFFFFFFF:
-                    result["next_start_ts"] = int(ns)
-            except (ValueError, TypeError, KeyError):
+                if ns is not None:
+                    next_start = int(ns)
+                    # 0xFFFFFFFF (or -1 when signed) = "until further notice"
+                    if next_start not in (0, -1, 0xFFFFFFFF):
+                        result["next_start_ts"] = next_start
+                if req.get("source_for_next_start") is not None:
+                    result["source_for_next_start"] = int(req["source_for_next_start"])
+            except (ValueError, TypeError, KeyError, AttributeError):
+                pass
+            last_seen = _parse_time(dp32.get("report_time"))
+            if last_seen is not None:
+                result["last_seen"] = last_seen
+
+        # --- dp[31] / dp[36]: WiFi and mobile network signal quality (%) ---
+        for dp_key, field_name, json_key in (
+            ("31", "wifi_signal", "signal_quality"),
+            ("36", "lte_signal", "gprs_lte_signal_quality"),
+        ):
+            dp = datapoints.get(dp_key)
+            if isinstance(dp, dict) and isinstance(dp.get("value"), str):
+                try:
+                    resp_obj = json.loads(dp["value"]).get("response") or {}
+                    if resp_obj.get(json_key) is not None:
+                        result[field_name] = int(resp_obj[json_key])
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    pass
+
+        # --- dp[125]: weekly schedule ---
+        dp125 = datapoints.get("125")
+        if isinstance(dp125, dict) and isinstance(dp125.get("value"), str):
+            try:
+                resp_obj = json.loads(dp125["value"]).get("response") or {}
+                if int(resp_obj.get("return_code", 0)) == 0:
+                    schedule = parse_schedule(resp_obj)
+                    if schedule is not None:
+                        result["schedule"] = schedule
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+        # --- dp[119]: header of the firmware offered to the mower ---
+        # bytes 0-4 "#RLM@", 5 pad, 6 major, 7 minor, 8-11 build (LE)
+        dp119 = datapoints.get("119")
+        if isinstance(dp119, dict) and isinstance(dp119.get("value"), str):
+            try:
+                resp_obj = json.loads(dp119["value"]).get("response") or {}
+                header = bytes.fromhex(resp_obj.get("program_header") or "")
+                if len(header) >= 12 and header[:4] == b"#RLM":
+                    build = int.from_bytes(header[8:12], "little")
+                    result["latest_software_version"] = f"{header[6]}.{header[7]}.{build}"
+            except (ValueError, TypeError, KeyError, AttributeError):
+                pass
+
+        # --- dp[8]: security level (PIN required for commands when 1 or 9) ---
+        dp8 = datapoints.get("8")
+        if isinstance(dp8, dict) and isinstance(dp8.get("value"), str):
+            try:
+                resp_obj = json.loads(dp8["value"]).get("response") or {}
+                if (
+                    int(resp_obj.get("return_code", -1)) == 0
+                    and resp_obj.get("security_level") is not None
+                ):
+                    result["security_level"] = int(resp_obj["security_level"])
+            except (ValueError, TypeError, KeyError, AttributeError):
+                pass
+
+        # --- dp[33]: last error event ---
+        dp33 = datapoints.get("33")
+        if isinstance(dp33, dict) and isinstance(dp33.get("value"), str):
+            try:
+                req = json.loads(dp33["value"]).get("request") or {}
+                if req.get("event_id") is not None:
+                    result["last_error_code"] = int(req["event_id"])
+                    result["last_error_time"] = req.get("request_time") or dp33.get(
+                        "report_time"
+                    )
+            except (ValueError, TypeError, KeyError, AttributeError):
                 pass
 
         # --- dp[34]: current GPS position ---
         dp34 = datapoints.get("34")
         if isinstance(dp34, dict) and isinstance(dp34.get("value"), str):
             try:
-                req = _json.loads(dp34["value"]).get("request") or {}
+                req = json.loads(dp34["value"]).get("request") or {}
                 if req.get("latitude") is not None:
                     result["latitude"] = float(req["latitude"])
                 if req.get("longitude") is not None:
@@ -450,7 +808,7 @@ class CramerConnectClient:
         dp48 = datapoints.get("48")
         if isinstance(dp48, dict) and isinstance(dp48.get("value"), str):
             try:
-                resp_obj = _json.loads(dp48["value"]).get("response") or {}
+                resp_obj = json.loads(dp48["value"]).get("response") or {}
                 if resp_obj.get("cutting_time") is not None:
                     result["cutting_time_s"] = int(resp_obj["cutting_time"])
                 if resp_obj.get("running_time") is not None:
@@ -466,7 +824,13 @@ class CramerConnectClient:
         dp117 = datapoints.get("117")
         if isinstance(dp117, dict) and isinstance(dp117.get("value"), str):
             try:
-                parsed = _json.loads(dp117["value"])
+                parsed = json.loads(dp117["value"])
+                req = parsed.get("request") or {}
+                major = req.get("mower_main_application_major_sw_version")
+                minor = req.get("mower_main_application_minor_sw_version")
+                build = req.get("mower_main_application_build_no")
+                if None not in (major, minor, build):
+                    result["software_version"] = f"{int(major)}.{int(minor)}.{int(build)}"
                 resp_obj = parsed.get("response") or {}
                 if resp_obj.get("sw_update") is not None:
                     result["sw_update_available"] = bool(resp_obj["sw_update"])
@@ -477,7 +841,7 @@ class CramerConnectClient:
         dp21 = datapoints.get("21")
         if isinstance(dp21, dict) and isinstance(dp21.get("value"), str):
             try:
-                resp_obj = _json.loads(dp21["value"]).get("response") or {}
+                resp_obj = json.loads(dp21["value"]).get("response") or {}
                 raw_name = resp_obj.get("mower_name", "")
                 clean_name = raw_name.split("\x00")[0].strip()
                 if clean_name:
@@ -493,9 +857,13 @@ class CramerConnectClient:
             except (ValueError, TypeError):
                 pass
 
-        # --- dp[246]: software version string ---
+        # --- dp[246]: software version string (fallback when dp[117] is absent) ---
         dp246 = datapoints.get("246")
-        if isinstance(dp246, dict) and isinstance(dp246.get("value"), str):
+        if (
+            "software_version" not in result
+            and isinstance(dp246, dict)
+            and isinstance(dp246.get("value"), str)
+        ):
             val = dp246["value"].strip()
             if val:
                 result["software_version"] = val
@@ -505,92 +873,65 @@ class CramerConnectClient:
     async def send_command(
         self,
         auth: CramerAuth,
-        product_id: str,
         device_id: str,
-        hub_method: str,
-        arguments: list | None = None,
-        device_authorize: str = "",
+        payload_hex: str,
     ) -> None:
-        """Send a command to the mower via the SignalR hub.
+        """Publish a command to an RLM1 mower over MQTT, exactly like the app.
 
-        Confirmed endpoint: wss://signalr.globetools.systems:446/mowerSupport
-        Auth: GUC bearer token (negotiated via HTTP, then passed in WS URL).
-
-        hub_method examples: StartMowerRequest, ParkMowerRequest, PauseMowerRequest
-        arguments: list of positional arguments for the hub method.
+        Broker: ssl://mqtt.globetools.systems:1884 (MQTT 3.1.1)
+        Username: xlink user id; password: md5(user_id + authorize)
+        Topic: "$7/<device_id>"; payload: raw bytes of the hex command string.
         """
-        import json as _json
-
-        _SR_TERMINATOR = "\x1e"
-
-        # Step 1: negotiate to get the connection token
-        negotiate_url = f"{SIGNALR_URL}/negotiate?negotiateVersion=1"
-        headers = {"Authorization": f"Bearer {auth.guc_token}"}
-        async with self._session.post(negotiate_url, headers=headers) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise CramerConnectApiError(
-                    f"SignalR negotiate failed ({resp.status}): {text}"
-                )
-            neg = await resp.json()
-
-        connection_token = neg.get("connectionToken", "")
-        ws_url = (
-            SIGNALR_URL.replace("https://", "wss://")
-            + f"?id={connection_token}"
-        )
-
-        # Step 2: connect WebSocket, handshake, invoke
-        args = arguments if arguments is not None else [
-            {"deviceId": int(device_id), "productId": product_id}
-        ]
-        invocation = _json.dumps({
-            "type": 1,
-            "invocationId": "0",
-            "target": hub_method,
-            "arguments": args,
-        }) + _SR_TERMINATOR
+        if not auth.has_mqtt_credentials:
+            raise CramerConnectApiError(
+                "No MQTT credentials available for this account"
+            )
+        if self._ssl_context is None:
+            self._ssl_context = await asyncio.get_running_loop().run_in_executor(
+                None, ssl.create_default_context
+            )
+        password = hashlib.md5(
+            (auth.xlink_user_id + auth.xlink_authorize).encode()
+        ).hexdigest()
+        client_id = f"X:APP;A:4;V:1;RES:{secrets.token_hex(8)};"
+        topic = MQTT_COMMAND_TOPIC.format(device_id=device_id)
+        try:
+            payload = bytes.fromhex(payload_hex)
+        except ValueError as err:
+            raise CramerConnectApiError(f"Invalid command payload: {err}") from err
 
         try:
-            async with self._session.ws_connect(ws_url, headers=headers) as ws:
-                # Send SignalR JSON handshake
-                await ws.send_str(
-                    _json.dumps({"protocol": "json", "version": 1}) + _SR_TERMINATOR
-                )
-                # Read handshake ack (may be empty or {})
-                await asyncio.wait_for(ws.receive(), timeout=5)
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    MQTT_HOST,
+                    MQTT_PORT,
+                    ssl=self._ssl_context,
+                    server_hostname=MQTT_HOST,
+                ),
+                timeout=10,
+            )
+        except (OSError, asyncio.TimeoutError) as err:
+            raise CramerConnectApiError(f"MQTT connection failed: {err}") from err
 
-                # Send the hub method invocation
-                await ws.send_str(invocation)
-                _LOGGER.debug("SignalR invoked %s for device %s", hub_method, device_id)
-
-                # Wait for completion message (type 3) or timeout
-                deadline = 10.0
-                while deadline > 0:
-                    try:
-                        msg = await asyncio.wait_for(ws.receive(), timeout=min(deadline, 5))
-                        deadline -= 5
-                    except asyncio.TimeoutError:
-                        break
-                    if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR):
-                        break
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        for part in msg.data.split(_SR_TERMINATOR):
-                            if not part.strip():
-                                continue
-                            try:
-                                parsed = _json.loads(part)
-                            except ValueError:
-                                continue
-                            if parsed.get("type") == 3:
-                                err = parsed.get("error")
-                                if err:
-                                    raise CramerConnectApiError(
-                                        f"SignalR hub error: {err}"
-                                    )
-                                return  # success
-        except aiohttp.ClientError as err:
-            raise CramerConnectApiError(f"SignalR connection error: {err}") from err
+        try:
+            await asyncio.wait_for(
+                _mqtt_publish(
+                    reader, writer, client_id, auth.xlink_user_id, password,
+                    topic, payload,
+                ),
+                timeout=15,
+            )
+            _LOGGER.debug("MQTT published %s to %s", payload_hex, topic)
+        except asyncio.TimeoutError as err:
+            raise CramerConnectApiError("MQTT command timed out") from err
+        except (OSError, asyncio.IncompleteReadError) as err:
+            raise CramerConnectApiError(f"MQTT error: {err}") from err
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -629,3 +970,88 @@ class CramerConnectClient:
                 )
             )
         return devices
+
+
+# ----------------------------------------------------------------------
+# Minimal MQTT 3.1.1 client (CONNECT → PUBLISH QoS 1 → DISCONNECT)
+# ----------------------------------------------------------------------
+
+_MQTT_CONNACK_ERRORS = {
+    1: "unacceptable protocol version",
+    2: "client identifier rejected",
+    3: "server unavailable",
+    4: "bad username or password",
+    5: "not authorized",
+}
+
+
+def _mqtt_str(value: str | bytes) -> bytes:
+    data = value.encode() if isinstance(value, str) else value
+    return len(data).to_bytes(2, "big") + data
+
+
+def _mqtt_packet(header: int, body: bytes) -> bytes:
+    length = len(body)
+    encoded = bytearray()
+    while True:
+        byte = length % 128
+        length //= 128
+        if length:
+            byte |= 0x80
+        encoded.append(byte)
+        if not length:
+            break
+    return bytes([header]) + bytes(encoded) + body
+
+
+async def _mqtt_read_packet(reader: asyncio.StreamReader) -> tuple[int, bytes]:
+    header = (await reader.readexactly(1))[0]
+    multiplier, length = 1, 0
+    for _ in range(4):
+        byte = (await reader.readexactly(1))[0]
+        length += (byte & 0x7F) * multiplier
+        if not byte & 0x80:
+            break
+        multiplier *= 128
+    body = await reader.readexactly(length) if length else b""
+    return header, body
+
+
+async def _mqtt_publish(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    client_id: str,
+    username: str,
+    password: str,
+    topic: str,
+    payload: bytes,
+) -> None:
+    # CONNECT: protocol "MQTT" level 4, flags user+password+clean session
+    connect = (
+        _mqtt_str("MQTT") + bytes([0x04, 0xC2]) + (60).to_bytes(2, "big")
+        + _mqtt_str(client_id) + _mqtt_str(username) + _mqtt_str(password)
+    )
+    writer.write(_mqtt_packet(0x10, connect))
+    await writer.drain()
+
+    header, body = await _mqtt_read_packet(reader)
+    if header >> 4 != 2 or len(body) < 2:
+        raise CramerConnectApiError(f"Unexpected MQTT reply 0x{header:02x}")
+    if body[1] != 0:
+        reason = _MQTT_CONNACK_ERRORS.get(body[1], f"code {body[1]}")
+        if body[1] in (4, 5):
+            raise CramerConnectTokenExpiredError(f"MQTT login refused: {reason}")
+        raise CramerConnectApiError(f"MQTT connection refused: {reason}")
+
+    packet_id = 1
+    publish = _mqtt_str(topic) + packet_id.to_bytes(2, "big") + payload
+    writer.write(_mqtt_packet(0x32, publish))  # PUBLISH, QoS 1
+    await writer.drain()
+
+    while True:
+        header, body = await _mqtt_read_packet(reader)
+        if header >> 4 == 4 and body[:2] == packet_id.to_bytes(2, "big"):
+            break  # PUBACK
+
+    writer.write(b"\xe0\x00")  # DISCONNECT
+    await writer.drain()

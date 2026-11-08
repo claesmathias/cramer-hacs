@@ -8,7 +8,8 @@ import pytest
 
 from custom_components.cramer_connect.api import CramerDevice
 from custom_components.cramer_connect.sensor import CramerMowerSensor, MOWER_SENSORS
-from custom_components.cramer_connect.binary_sensor import CramerOnlineSensor, CramerUpdateSensor
+from custom_components.cramer_connect.binary_sensor import CramerOnlineSensor, CramerChargingSensor
+from custom_components.cramer_connect.update import CramerFirmwareUpdate
 
 
 # ---------------------------------------------------------------------------
@@ -58,10 +59,9 @@ def _sensor(key: str, device: CramerDevice | None = None) -> CramerMowerSensor:
     return sensor
 
 
-def _update_sensor(device: CramerDevice | None = None) -> CramerUpdateSensor:
+def _update_entity(device: CramerDevice | None = None) -> CramerFirmwareUpdate:
     dev = device or _device()
-    coord = _coordinator(dev)
-    return CramerUpdateSensor(coord, dev.device_id)
+    return CramerFirmwareUpdate(_coordinator(dev), dev.device_id)
 
 
 def _online_sensor(device: CramerDevice | None = None) -> CramerOnlineSensor:
@@ -80,13 +80,21 @@ class TestStateSensor:
         assert _sensor("state").native_value == "mowing"
 
     def test_unknown_state_label(self):
-        assert _sensor("state", _device(state="99")).native_value == "unknown"
+        # ENUM sensors report None for values outside their options
+        assert _sensor("state", _device(state="99")).native_value is None
 
     def test_none_state(self):
-        assert _sensor("state", _device(state=None)).native_value == "unknown"
+        assert _sensor("state", _device(state=None)).native_value is None
 
     def test_extra_attrs_contains_raw_state(self):
-        assert _sensor("state").extra_state_attributes == {"raw_state": "4"}
+        assert _sensor("state").extra_state_attributes["raw_state"] == "4"
+
+    def test_extra_attrs_contains_parked_reason(self):
+        attrs = _sensor(
+            "state", _device(state="2", source_for_next_start=2)
+        ).extra_state_attributes
+        assert attrs["reason"] == "parked_by_schedule"
+        assert attrs["source_for_next_start"] == 2
 
     def test_unavailable_when_offline(self):
         s = _sensor("state", _device(is_online=False))
@@ -327,24 +335,157 @@ class TestOnlineSensor:
 # Update available binary sensor
 # ---------------------------------------------------------------------------
 
-class TestUpdateSensor:
-    def test_is_on_when_update_available(self):
-        assert _update_sensor().is_on is True
+class TestFirmwareUpdate:
+    def test_versions(self):
+        u = _update_entity(_device(software_version="13.5.1", latest_software_version="13.6.2"))
+        assert u.installed_version == "13.5.1"
+        assert u.latest_version == "13.6.2"
 
-    def test_is_off_when_no_update(self):
-        assert _update_sensor(_device(sw_update_available=False)).is_on is False
+    def test_latest_defaults_to_installed(self):
+        u = _update_entity(_device(software_version="13.5.1", latest_software_version=None))
+        assert u.latest_version == "13.5.1"
 
-    def test_unavailable_when_no_data(self):
-        assert _update_sensor(_device(sw_update_available=None)).available is False
+    def test_unavailable_without_version(self):
+        assert _update_entity(_device(software_version=None)).available is False
 
-    def test_available_when_data_present(self):
-        assert _update_sensor().available is True
+    def test_unique_id(self):
+        assert _update_entity()._attr_unique_id == "dev-1_firmware"
 
-    def test_unique_id_suffix(self):
-        assert _update_sensor()._attr_unique_id == "dev-1_update"
 
-    def test_device_info_uses_mower_model(self):
-        from custom_components.cramer_connect.const import DOMAIN
-        info = _update_sensor().device_info
-        assert (DOMAIN, "dev-1") in info["identifiers"]
-        assert info["model"] == "Test RM1000"
+class TestChargingSensor:
+    def _sensor(self, **kw):
+        dev = _device(**kw)
+        return CramerChargingSensor(_coordinator(dev), dev.device_id)
+
+    def test_charging_state(self):
+        assert self._sensor(state="7").is_on is True
+
+    def test_parked_charging_reason(self):
+        assert self._sensor(state="2", source_for_next_start=1).is_on is True
+
+    def test_mowing_not_charging(self):
+        assert self._sensor(state="4").is_on is False
+
+    def test_unavailable_offline(self):
+        assert self._sensor(is_online=False).available is False
+
+
+class TestLastErrorSensor:
+    def test_known_error_text(self):
+        s = _sensor("last_error", _device(last_error_code=53, last_error_time="2026-06-01T10:00:00Z"))
+        assert s.native_value == "Mower is stuck."
+        assert s.extra_state_attributes == {
+            "error_code": 53, "error_time": "2026-06-01T10:00:00Z",
+        }
+
+    def test_unknown_error_code(self):
+        assert _sensor("last_error", _device(last_error_code=999)).native_value == "Error 999"
+
+    def test_zero_event_is_unknown_error(self):
+        assert _sensor("last_error", _device(last_error_code=0)).native_value == "Unknown error"
+
+    def test_no_error(self):
+        assert _sensor("last_error").native_value == "No error"
+
+    def test_available_when_offline(self):
+        assert _sensor("last_error", _device(is_online=False)).available is True
+
+
+class TestExpandedState:
+    @pytest.mark.parametrize("source,expected", [
+        (1, "charging"), (2, "parked_by_schedule"), (3, "parked_max_day_cutting"),
+        (4, "parked_by_user"), (5, "parked_by_rain_guard"),
+        (6, "parked_by_frost_guard"), (7, "energy_saving_mode"), (0, "parked"),
+        (None, "parked"),
+    ])
+    def test_parked_split_by_reason(self, source, expected):
+        s = _sensor("state", _device(state="2", source_for_next_start=source))
+        assert s.native_value == expected
+
+    def test_every_value_is_an_option(self):
+        from custom_components.cramer_connect.const import MOWER_STATE_OPTIONS
+        desc = next(d for d in MOWER_SENSORS if d.key == "state")
+        assert desc.options == MOWER_STATE_OPTIONS
+        assert desc.device_class == "enum"
+
+
+class TestStatusSensor:
+    def test_mowing(self):
+        assert _sensor("status").native_value == "Mowing"
+
+    def test_parked_by_user_until_further_notice(self):
+        s = _sensor("status", _device(state="2", source_for_next_start=4, next_start_ts=None))
+        assert s.native_value == "Parked by user until further notice"
+
+    def test_charging_until_time(self):
+        s = _sensor("status", _device(state="7", next_start_ts=1800000000))
+        assert s.native_value.startswith("Charging until ")
+
+    def test_error_includes_error_text(self):
+        s = _sensor("status", _device(state="9", last_error_code=53))
+        assert s.native_value == "Fatal error: Mower is stuck."
+
+    def test_offline_suffix(self):
+        s = _sensor("status", _device(state="1", is_online=False))
+        assert s.native_value == "Stop button pressed (offline)"
+        assert s.available is True
+
+
+class TestLastSeenAndSignal:
+    def test_last_seen(self):
+        ts = datetime(2026, 11, 5, 4, 33, tzinfo=timezone.utc)
+        s = _sensor("last_seen", _device(last_seen=ts, is_online=False))
+        assert s.native_value == ts
+        assert s.available is True
+
+    def test_last_seen_unavailable_when_unknown(self):
+        assert _sensor("last_seen").available is False
+
+    def test_wifi_signal(self):
+        s = _sensor("wifi_signal", _device(wifi_signal=83))
+        assert s.native_value == 83 and s.available is True
+
+    def test_lte_signal_unavailable_when_missing(self):
+        assert _sensor("lte_signal").available is False
+
+
+class TestEntityCategories:
+    def _desc(self, key):
+        return next(d for d in MOWER_SENSORS if d.key == key)
+
+    @pytest.mark.parametrize("key", [
+        "error_count", "last_error", "software_version", "wifi_signal",
+        "lte_signal", "latitude", "longitude",
+    ])
+    def test_diagnostic(self, key):
+        assert self._desc(key).entity_category == "diagnostic"
+
+    @pytest.mark.parametrize("key", ["latitude", "longitude"])
+    def test_coordinates_disabled_by_default(self, key):
+        assert self._desc(key).entity_registry_enabled_default is False
+
+    @pytest.mark.parametrize("key", ["cutting_time", "running_time", "charging_time", "distance"])
+    def test_whole_number_display(self, key):
+        assert self._desc(key).suggested_display_precision == 0
+
+    def test_all_named_via_translations(self):
+        import json
+        from pathlib import Path
+        strings = json.loads((Path(__file__).parent.parent / "custom_components/cramer_connect/strings.json").read_text())
+        icons = json.loads((Path(__file__).parent.parent / "custom_components/cramer_connect/icons.json").read_text())
+        for d in MOWER_SENSORS:
+            if d.key == "battery":
+                continue  # named by its device class
+            assert d.translation_key in strings["entity"]["sensor"], d.key
+            assert d.translation_key in icons["entity"]["sensor"], d.key
+            assert not getattr(d, "name", None) and not getattr(d, "icon", None)
+
+
+class TestNonstopStatus:
+    def test_nonstop_mowing_until(self):
+        s = _sensor("status", _device(state="4", source_for_next_start=52, next_start_ts=1800000000))
+        assert s.native_value.startswith("Mowing nonstop until ")
+
+    def test_nonstop_without_end(self):
+        s = _sensor("status", _device(state="4", source_for_next_start=53, next_start_ts=None))
+        assert s.native_value == "Mowing nonstop"
