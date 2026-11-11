@@ -20,10 +20,13 @@ A Home Assistant custom integration for **Cramer Connect** robotic lawn mowers (
 
 ## Supported devices
 
-| Model | Supported |
+| Model / API product family | Support |
 |---|---|
-| Cramer RLM1 (robotic lawn mower gen 1) | ✅ |
-| Cramer RLM2 (robotic lawn mower gen 2) | ✅ |
+| **Cramer RM1500** (commercial model) | ✅ Contributor-tested: start, pause, return to base / indefinite parking, and end-of-day parking buttons |
+| Cramer RLM1 (API product family, robotic lawn mower gen 1) | ✅ Monitoring and remote controls |
+| Cramer RLM2 (API product family, robotic lawn mower gen 2) | ✅ Monitoring; no remote control entities in this integration |
+
+`RLM1` and `RLM2` are the API product codes used by the integration, rather than a complete list of commercial model names. The RM1500 is listed separately to make its reported test coverage explicit; its exact API product code has not been independently verified in this research.
 
 ### Tested hardware
 
