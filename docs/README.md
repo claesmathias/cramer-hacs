@@ -26,3 +26,5 @@ Java paths are relative to `reverse_engineering/jadx/sources/`. Those files rema
 This branch contains documentation and ignore rules only. No integration or test changes and no root AGENTS.md are proposed here. Contributor guidance relevant to this investigation is included in the roadmap and verification documents. Native-control regression tests belong in a separate contribution.
 
 No Cramer servers were contacted, no credentials were used, and no physical commands were sent during this work. The investigation is selective: it is not a complete backend specification or a certification of model compatibility. Application constants and real secrets are not reproduced.
+
+The production-code consistency check and the contributor-reported Cramer RM1500 test scope are recorded in [Architecture](ARCHITECTURE.md#consistency-check-against-the-functional-integration). The repository README also lists the tested hardware.

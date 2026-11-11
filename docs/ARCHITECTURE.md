@@ -32,7 +32,7 @@ RLM1/RLM2 selection uses productCode. If it is missing, `is_mower` accepts a dev
 
 1. `_is_fleet_user` treats exceptions and any non-200 HTTP response as a consumer account. A Fleet outage can redirect login and produce misleading errors.
 2. `_get_xlink_device_state` returns `{}` for all non-200 responses, including 401; `_enrich_devices` absorbs exceptions. A refresh can appear successful without telemetry or triggering authentication recovery. List and datapoint failures need separate handling.
-3. The coordinator repeats full login at expiry instead of consuming stored refresh tokens. It ignores Fleet expiration and Xlink's returned `expire_in`, using min(GUC, 7200). There is no reauthentication lock between commands and polling.
+3. The coordinator repeats full login at expiry instead of consuming stored refresh tokens. It ignores Fleet expiration and Xlink's returned `expire_in`, using min(GUC, 7200) when an Xlink token exists, or GUC expiry alone otherwise. There is no reauthentication lock between commands and polling.
 4. `send_command` logs the complete command payload at debug level. Start commands can contain the PIN. HTTP error bodies are also copied into logs/exceptions and may contain sensitive data.
 5. `CramerMowerEntity.available` checks online status and MQTT credentials but omits `coordinator.last_update_success`. Other platforms implement their own availability. Calendar intentionally keeps a known schedule while the robot is offline. An experimental native-entity availability override was reviewed separately and withdrawn from the native-controls proposal to keep that behavioral change independent.
 6. `supports_remote_control` accepts any product code except RLM2. An unknown product with state data might receive controls. Lack of evidence for RLM2 cloud control does not prove universal impossibility.
@@ -61,3 +61,16 @@ All paths below are under `custom_components/cramer_connect/` in the baseline ch
 | coordinator.py | _async_update_data:61; force_reauth:108; _ensure_auth:120 |
 | config_flow.py | async_step_user:52; async_step_reauth_confirm:85 |
 | diagnostics.py | device_diagnostics:49 |
+
+## Consistency check against the functional integration
+
+The production files under custom_components/ are identical in main (baseline commit 3414dbf), docs/cramer-api-research and the current native-controls test branch at the time of this check. Existing START_MOWING/PAUSE/DOCK methods, shared button commands, MQTT transport and schedule services agree with this documentation. The roadmap lists proposed improvements, not already-applied fixes; API entries explicitly distinguish implemented methods from Android-only declarations.
+
+Documentation clarifications from this check:
+
+- Automatic session renewal repeats login; stored refresh tokens are not consumed by the coordinator. The main README now uses session renewal rather than implying a refresh-token grant.
+- The min(GUC,7200) deadline applies only when an Xlink token exists; without it CramerAuth uses GUC expiry alone.
+- HACS excludes RLM2 remote controls. BLE is confirmed for the examined Android flows, but universal absence of cloud controls is not proven.
+- The withdrawn availability override is not present in current production code. Historical test counts refer to the stated branch/session, not documentation-only changes.
+
+The contributor reports working control buttons on a Cramer RM1500: start, pause, return-to-base/indefinite park and end-of-day park. This is user-reported physical validation of those controls, not an automated device test or verification of all schedules, firmware operations, account types or native frontend behavior. The main README records the same scope.

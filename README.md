@@ -14,7 +14,7 @@ A Home Assistant custom integration for **Cramer Connect** robotic lawn mowers (
 - Mower **state** sensor (`mowing`, `charging`, `parked`, ...) with the parked reason
 - **Battery**, **next start**, **last error**, statistics, GPS position, software version
 - Optional **PIN code** for mowers that need it to accept a start command
-- Automatic **token refresh** — stays connected without re-entering credentials
+- Automatic **session renewal** — signs in again when tokens expire, without requiring credentials to be re-entered
 - Polling every **30 seconds**
 - Works with all Cramer fleet accounts (same login as the Cramer Connect app)
 
@@ -24,6 +24,12 @@ A Home Assistant custom integration for **Cramer Connect** robotic lawn mowers (
 |---|---|
 | Cramer RLM1 (robotic lawn mower gen 1) | ✅ |
 | Cramer RLM2 (robotic lawn mower gen 2) | ✅ |
+
+### Tested hardware
+
+A contributor has manually tested this integration with a **Cramer RM1500**, including the **start mowing**, **pause**, **return to base / park until further notice (dock)** and **park for the rest of the day** control buttons.
+
+This confirms those controls on the tested robot; it does not establish that every feature or firmware version has been tested. Native `lawn_mower` actions reuse the same command logic as the buttons.
 
 ## Installation
 
@@ -102,7 +108,7 @@ The same rules as in the app apply: a timer has to end after it starts, it can't
 
 ### Remote control
 
-Commands are sent the same way the app sends them: MQTT messages to `mqtt.globetools.systems:1884` (TLS). This works for **RLM1** mowers. **RLM2** mowers are controlled over Bluetooth only, so no control entities are created for them.
+Commands are sent the same way the app sends them: MQTT messages to `mqtt.globetools.systems:1884` (TLS). This works for **RLM1** mowers. The RLM2 control flows examined in the Android app use Bluetooth; this integration does not expose remote control entities for **RLM2** mowers.
 
 If the mower's security setting requires a PIN code to start, set it under **Settings → Devices & Services → Cramer Connect → Configure**.
 

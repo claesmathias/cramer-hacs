@@ -20,7 +20,7 @@ DOCK means **Park until further notice**: return to base and stay parked indefin
 
 **Park for the rest of the day** remains a separate button and calculates minutes until day end. cramer_connect.park also supports a duration. Neither is synonymous with indefinite DOCK. Start/pause buttons are alternate entry points into the same code, not additional native capabilities.
 
-The user has manually confirmed their start/pause/park buttons work. Native service dispatch and card presentation still require their manual verification. No physical orders were sent during this work.
+The contributor has manually confirmed start/pause/return-to-base (dock/indefinite park) and end-of-day parking buttons on a Cramer RM1500 work. Native service dispatch and card presentation still require their manual verification. No physical orders were sent during this work.
 
 ## Acknowledgement, errors and state
 
