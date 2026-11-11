@@ -23,3 +23,18 @@ venv/
 
 # Certificates
 *.pem
+
+# Cramer APK reverse engineering
+/reverse_engineering/apk/
+/reverse_engineering/jadx/
+/reverse_engineering/apktool/
+
+# Python
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+
+# Local secrets
+.env
+*.secrets.json
