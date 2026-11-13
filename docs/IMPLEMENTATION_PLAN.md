@@ -12,9 +12,9 @@ The working fork is `https://github.com/davidpicon7/cramer-hacs.git` (origin); t
 
 ## PR 1 — Authentication error handling and privacy
 
-Classify an account as consumer only after a valid classification response. Distinguish network/5xx failures from invalid credentials. Propagate datapoint 401 instead of empty success, with an explicit whole-refresh versus per-device degradation policy. Remove command payloads from logs and sanitize HTTP error bodies; the logging fix can be an independent urgent PR.
+Classify an account as consumer only after a valid classification response. Distinguish network/5xx failures from invalid credentials. Propagate datapoint 401 instead of empty success, with an explicit whole-refresh versus per-device degradation policy. Review logging and error-reporting privacy with the maintainer; coordinate any security-sensitive report and remediation privately before publishing reproduction details.
 
-Dependencies: none. Risk: changing Fleet partial degradation; retain read-only operation without MQTT where appropriate. Acceptance: classification outage does not trigger consumer login; datapoint 401 invokes recovery once; synthetic PIN/token markers never appear in logs. Tests: mocked 401/403/429/5xx, timeout, malformed JSON and multiple devices, without external networking.
+Dependencies: none. Risk: changing Fleet partial degradation; retain read-only operation without MQTT where appropriate. Acceptance: classification outage does not trigger consumer login; datapoint 401 invokes recovery once; synthetic sensitive-data markers never appear in logs. Tests: mocked 401/403/429/5xx, timeout, malformed JSON and multiple devices, without external networking.
 
 ## PR 2 — API client and session lifecycle
 

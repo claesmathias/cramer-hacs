@@ -2,22 +2,20 @@
 
 [Index](README.md) · [Android evidence](APK_ANALYSIS.md)
 
-Scope: authentication, device inventory/state, robot controls and related communications. Commercial/account-management/vehicle APIs are not exhaustively catalogued. Contracts below are **CONFIRMED IN CODE** unless stated otherwise; current server acceptance is **PENDING REAL-WORLD VALIDATION**. Implemented means code exists, not a successful physical test.
+Scope: contracts used by the existing integration for authentication, device inventory/state and RLM1 controls. Unimplemented backend operations and manufacturer support services are outside this reference. Contracts below are **CONFIRMED IN CODE** unless stated otherwise; current server acceptance is **PENDING REAL-WORLD VALIDATION**. Implemented means code exists, not a successful physical test.
 
 ## Hosts and common authentication
 
-| Alias | Base URL from NetworkApi.java:27–47 |
+| Alias | Base URL declared in HACS const.py |
 |---|---|
 | Fleet | https://cramerfleetapi.globetools.systems |
 | IsFleet | https://cramerfleetauth.globetools.systems |
 | Xlink | https://xapi.globetools.systems |
 | GUC | https://guc.globetools.systems:446 |
-| Device DB | https://device.globetools.systems |
-| Products | https://productservice.globetools.systems |
 
 Common headers: ApplicationKey, Brand, App-Name, Language. Xlink session headers: Access-Token, Xlink-Access-Token, Xlink-User-Id and Bearer GUC when available. Fleet uses Bearer Fleet. Sending is evidenced; mandatory status of each header has not been isolated experimentally. Sensitive header values are omitted.
 
-ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepository is under basefunction/repository. Python client methods are in custom_components/cramer_connect/api.py. Response field lists describe known fields, not exhaustive server schemas.
+Python client methods are in `custom_components/cramer_connect/api.py`; transport and command constants are in `const.py` in the same directory. Response field lists describe known fields, not exhaustive server schemas.
 
 ## Classify account
 
@@ -26,9 +24,9 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Endpoint: `IsFleet /api/Authorization/user-exist`.
 - Authentication: No initial user token; common headers.
 - Known parameters: JSON username.
-- Expected response: IsFleetUserBean; HACS reads existsOnFleet.
-- Source file/method: ApiService.isFleetUser:387–388; LoginRepository.isFleetUser:85–88.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response: HACS reads existsOnFleet.
+- Integration source: `api.py::_is_fleet_user`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _is_fleet_user; implemented, but failures become consumer.
 
 ## Fleet login
@@ -38,9 +36,9 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Endpoint: `Fleet /api/Authenticate`.
 - Authentication: Account credentials and common headers.
 - Known parameters: JSON username,password.
-- Expected response: FleetLoginBean: access_token,organization_id,owner_organization_id,expiration and other metadata.
-- Source file/method: ApiService.fleetLogin:190–191; LoginRepository.fleetLogin:52–57.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response fields: access_token,organization_id,owner_organization_id,expiration and other metadata.
+- Integration source: `api.py::_fleet_login`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _fleet_login; expiration is not consumed.
 
 ## Fleet GUC exchange
@@ -50,9 +48,9 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Endpoint: `Fleet /api/account/GucToken`.
 - Authentication: Bearer Fleet.
 - Known parameters: JSON organizationId.
-- Expected response: GucTolenBean; HACS reads accessToken,refreshToken,expireIn.
-- Source file/method: ApiService.getGucToken:263–264; LoginRepository.getGucToken:65–69.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response: HACS reads accessToken,refreshToken,expireIn.
+- Integration source: `api.py::_get_guc_token`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _get_guc_token; implemented.
 
 ## Fleet Xlink exchange
@@ -62,9 +60,9 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Endpoint: `Fleet /api/account/XlinkToken`.
 - Authentication: Bearer Fleet.
 - Known parameters: JSON organizationId.
-- Expected response: XlinkTolenBean; HACS reads token,xlinkId,authString.
-- Source file/method: ApiService.switchOrganization:469–470; LoginRepository.switchOrganization:59–63.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response: HACS reads token,xlinkId,authString.
+- Integration source: `api.py::_get_fleet_xlink_token`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _get_fleet_xlink_token; optional failure.
 
 ## Consumer Xlink login
@@ -74,34 +72,22 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Endpoint: `Xlink /v2/user_auth`.
 - Authentication: Account credentials.
 - Known parameters: JSON corp_id,email,password,resource=null,phone=null,phone_zone=null.
-- Expected response: LoginBean: access_token,user_id,authorize,refresh_token,expire_in.
-- Source file/method: ApiService.login:390–392; LoginRepository.login:91–130.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response fields: access_token,user_id,authorize,refresh_token,expire_in.
+- Integration source: `api.py::_xlink_login`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _xlink_login; expire_in is not retained.
 
 ## Direct GUC login
 
 - Purpose: Obtain consumer GUC session.
-- HTTP method/communication: POST form; Android also has multipart fallback.
+- HTTP method/communication: POST form in HACS.
 - Endpoint: `GUC /connect/token`.
 - Authentication: Application client and account credentials; secrets omitted.
 - Known parameters: scope,grant_type=password,client_id,client_secret,username,password,HasLocationInfo,Latitude,Longitude,LoginTime.
-- Expected response: LoginBean: access_token,refresh_token,expires_in.
-- Source file/method: ApiService.gucLogin/gucLoginUrlEncoded:376–382; LoginRepository.gucLoginUrlEncoded:175+.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response fields: access_token,refresh_token,expires_in.
+- Integration source: `api.py::_guc_direct_login`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _guc_direct_login; form only.
-
-## Renew Xlink session
-
-- Purpose: Renew without account password.
-- HTTP method/communication: POST.
-- Endpoint: `Xlink /v2/user/token/refresh`.
-- Authentication: Session refresh_token; existing interceptor headers.
-- Known parameters: JSON refresh_token.
-- Expected response: LoginBean; full rotation/consumption semantics remain unknown.
-- Source file/method: ApiService.refresh:419–421; LoginRepository.refresh:217+.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
-- HACS status: Not implemented; repeats login.
 
 ## List Fleet devices
 
@@ -110,9 +96,9 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Endpoint: `Fleet /api/devices/{orgId}/subscribed`.
 - Authentication: Bearer Fleet.
 - Known parameters: Path orgId.
-- Expected response: ArrayList<DeviceBean>; HACS normalizes id,name,productCode,productModel,deviceStateBean and metadata.
-- Source file/method: ApiService.energyBoxSubscribeFleet:179–180.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response: Device list; HACS normalizes id,name,productCode,productModel,deviceStateBean and metadata.
+- Integration source: `api.py::_get_devices_fleet`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _get_devices_fleet; implemented.
 
 ## List Xlink devices
@@ -120,11 +106,11 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Purpose: Retrieve subscribed devices.
 - HTTP method/communication: GET.
 - Endpoint: `Xlink /v2/user/{user_id}/subscribe/devices`.
-- Authentication: Xlink session and Bearer GUC per interceptor.
+- Authentication: Xlink session and Bearer GUC in the Python client.
 - Known parameters: Path user_id.
-- Expected response: ArrayList<DeviceBean>; product_id,id,is_online and metadata used by HACS.
-- Source file/method: ApiService.getDevices:244–245.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response: Device list; product_id,id,is_online and metadata used by HACS.
+- Integration source: `api.py::_get_devices_xlink`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _get_devices_xlink; implemented.
 
 ## Xlink device state
@@ -134,9 +120,9 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Endpoint: `Xlink /v2/product/{product_id}/device-state/{device_id}`.
 - Authentication: Xlink session and Bearer GUC.
 - Known parameters: Paths product_id,device_id.
-- Expected response: DeviceStatusBean; HACS expects {datapoints:{id:{value,report_time}}}.
-- Source file/method: ApiService.getDeviceStatus:232–233.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response: HACS expects {datapoints:{id:{value,report_time}}}.
+- Integration source: `api.py::_get_xlink_device_state`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: _get_xlink_device_state; implemented, 401 not propagated.
 
 ## Fleet device state
@@ -146,52 +132,16 @@ ApiService means com/greenworks/basefunction/api/ApiService.java; LoginRepositor
 - Endpoint: `Fleet /api/devices/{organizationId}/status/{productId}/{deviceId}`.
 - Authentication: Bearer Fleet.
 - Known parameters: Paths organizationId,productId,deviceId.
-- Expected response: DeviceStatusBean; dynamic response not server-validated.
-- Source file/method: ApiService.getDeviceStatus:235–236.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
+- Expected response: Device status; dynamic response not server-validated.
+- Integration source: `api.py::get_device_status`.
+- Confidence: CONFIRMED IN CODE in the integration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
 - HACS status: get_device_status exists; ordinary enrichment uses Xlink.
-
-## Retrieve RLM2 PSK
-
-- Purpose: Prepare BLE access.
-- HTTP method/communication: POST.
-- Endpoint: `Xlink /v2/service/rlm2/device/psk`.
-- Authentication: Session context; precise requirements unknown.
-- Known parameters: getPsk() declares no parameters or @Body.
-- Expected response: Call<PskBean>; fields not reconstructed; sensitive material must not be exported.
-- Source file/method: ApiService.getPsk:315–316.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
-- HACS status: Not implemented.
-
-## Write Xlink datapoint
-
-- Purpose: Declared REST datapoint operation.
-- HTTP method/communication: POST.
-- Endpoint: `Xlink /v2/product/{product_id}/app_datapoint_value`.
-- Authentication: Xlink session per interceptor.
-- Known parameters: Path product_id; RequestBody caller/payload still to reconstruct.
-- Expected response: Call<Object>; reply semantics unknown.
-- Source file/method: ApiService.putAppDatapoint:415–417.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
-- HACS status: Not implemented; no evidence it replaces MQTT start/pause.
-
-## Write Fleet datapoint
-
-- Purpose: Declared organization-scoped datapoint operation.
-- HTTP method/communication: POST.
-- Endpoint: `Fleet /api/devices/{organizationId}/datapoint/{productId}/device/{deviceId}`.
-- Authentication: Bearer Fleet.
-- Known parameters: Paths as shown; RequestBody not reconstructed.
-- Expected response: Call<Object>; reply semantics unknown.
-- Source file/method: ApiService.putAppDatapoint:411–413.
-- Confidence: CONFIRMED IN CODE for the declaration; unknown fields and live behavior remain PENDING REAL-WORLD VALIDATION.
-- HACS status: Not implemented; declaration alone does not justify enabling controls.
 
 ## RLM1 command transport
 
-MQTT 3.1.1 over TLS to mqtt.globetools.systems:1884. Topic `$7/{device_id}`, QoS 1, raw binary payload decoded from hex (not hex text or JSON). Username: Xlink user_id. Password: MD5(user_id + authorize). Source: MqttManager.publishToTopic:146–156 and mqtt_init_Connect:292–306; HACS send_command/_mqtt_publish.
+MQTT 3.1.1 over TLS to mqtt.globetools.systems:1884. Topic `$7/{device_id}`, QoS 1, raw binary payload decoded from hex (not hex text or JSON). Username: Xlink user_id. Password: MD5(user_id + authorize). Integration source: `api.py::send_command`, `api.py::_mqtt_publish` and MQTT constants in `const.py`.
 
-All command operations below use this transport/authentication and receive a broker PUBACK, not device execution confirmation. Their Android paths are under com/greenworks/rlm1/ui/ unless another package is specified.
+All command operations below use this transport/authentication and receive a broker PUBACK, not device execution confirmation.
 
 ### Start/resume
 
@@ -200,7 +150,7 @@ All command operations below use this transport/authentication and receive a bro
 - Remote method/payload: `0007000d003a6000A007e400040000 + PIN_LE16`; + denotes concatenation.
 - Known parameters: Zero PIN unless required; security levels 1/9 require PIN.
 - Expected response: broker PUBACK; robot response handling is not implemented in HACS.
-- Source file/method: fragment/RLM1HomeFragment:681–704; baseframework/utils/StringUtils.getPin:560.
+- Integration source: `api.py::build_start_command`.
 - Confidence: CONFIRMED IN CODE; execution PENDING REAL-WORLD VALIDATION.
 - HACS status: build_start_command; native entity and button.
 
@@ -211,7 +161,7 @@ All command operations below use this transport/authentication and receive a bro
 - Remote method/payload: `0007000b00386000A005e200020000`; + denotes concatenation.
 - Known parameters: No variable fields.
 - Expected response: broker PUBACK; robot response handling is not implemented in HACS.
-- Source file/method: fragment/RLM1HomeFragment:866–882.
+- Integration source: `api.py::build_stop_command`.
 - Confidence: CONFIRMED IN CODE; execution PENDING REAL-WORLD VALIDATION.
 - HACS status: build_stop_command; native entity and button.
 
@@ -222,7 +172,7 @@ All command operations below use this transport/authentication and receive a bro
 - Remote method/payload: `0007000c00366000A0064a0103000000`; + denotes concatenation.
 - Known parameters: HACS selects this variant for state 12.
 - Expected response: broker PUBACK; robot response handling is not implemented in HACS.
-- Source file/method: fragment/RLM1HomeFragment:937.
+- Integration source: `api.py::build_stop_command`.
 - Confidence: CONFIRMED IN CODE; execution PENDING REAL-WORLD VALIDATION.
 - HACS status: build_stop_command; implemented.
 
@@ -233,7 +183,7 @@ All command operations below use this transport/authentication and receive a bro
 - Remote method/payload: `0007000b003e6000A005e60002 + minutes_LE16`; + denotes concatenation.
 - Known parameters: 0xfffe means indefinite; duration in minutes; HACS range 1–65533.
 - Expected response: broker PUBACK; robot response handling is not implemented in HACS.
-- Source file/method: fragment/RLM1HomeFragment.showParkTimeDialog:1126–1128.
+- Integration source: `api.py::build_park_command`.
 - Confidence: CONFIRMED IN CODE; execution PENDING REAL-WORLD VALIDATION.
 - HACS status: build_park_command; dock, buttons and park service.
 
@@ -244,7 +194,7 @@ All command operations below use this transport/authentication and receive a bro
 - Remote method/payload: `0007004f00326000A049400146 + week`; + denotes concatenation.
 - Known parameters: Monday first; 7 days × 2 timers × (hour,minute,duration_LE16,mode); mode 1 active.
 - Expected response: broker PUBACK; robot response handling is not implemented in HACS.
-- Source file/method: activity/ScheduleEditActivity.save:556–576.
+- Integration source: `api.py::build_schedule_command`.
 - Confidence: CONFIRMED IN CODE; execution PENDING REAL-WORLD VALIDATION.
 - HACS status: build_schedule_command; set_schedule and read-only calendar.
 
@@ -255,7 +205,7 @@ All command operations below use this transport/authentication and receive a bro
 - Remote method/payload: `0007000c00366000A0064a0103 + minutes_LE16 + mode`; + denotes concatenation.
 - Known parameters: 1–24 days converted to minutes, mode 01; cancellation suffix 000000.
 - Expected response: broker PUBACK; robot response handling is not implemented in HACS.
-- Source file/method: fragment/RLM1ScheduleFragment:320,691.
+- Integration source: `api.py::build_nonstop_command`.
 - Confidence: CONFIRMED IN CODE; execution PENDING REAL-WORLD VALIDATION.
 - HACS status: build_nonstop_command; existing services.
 
@@ -266,55 +216,21 @@ All command operations below use this transport/authentication and receive a bro
 - Remote method/payload: `0007001100566000A00b9a0008 + epoch_LE32 + offset_LE32`; + denotes concatenation.
 - Known parameters: UTC epoch seconds; signed offset seconds.
 - Expected response: broker PUBACK; robot response handling is not implemented in HACS.
-- Source file/method: fragment/RLM1ScheduleFragment:575; baseframework/utils/StringUtils.getEightLen:565.
+- Integration source: `api.py::build_set_clock_command`.
 - Confidence: CONFIRMED IN CODE; execution PENDING REAL-WORLD VALIDATION.
 - HACS status: build_set_clock_command; service and button.
 
 ### Start secondary area
 
-- Purpose: Start mowing a secondary area.
-- Communication: MQTT/TLS using the topic and authentication above.
-- Remote method/payload: `0007000d003c6000A007da0104 + minutes_LE16 + PIN_LE16`; + denotes concatenation.
-- Known parameters: UI-selected duration; PIN conditional on security; UI bounds still to verify.
-- Expected response: broker PUBACK; robot response handling is not implemented in HACS.
-- Source file/method: fragment/RLM1HomeFragment.showSecondaryAreaDialog:1261–1263.
-- Confidence: CONFIRMED IN CODE; execution PENDING REAL-WORLD VALIDATION.
-- HACS status: Not implemented; candidate after bounds/reply validation.
+Not implemented. A future contribution must establish duration bounds, authentication requirements and device response handling before adding a command contract. The existing stop-secondary-area variant remains documented above because HACS already uses it.
 
 ## MQTT events
 
-- Purpose: receive datapoints and command results.
-- Communication/endpoint: MQTT callbacks recognize topic prefixes $6/$8; complete subscription topics remain unknown.
-- Authentication: the MQTT session described above.
-- Known parameters: device extracted from topic; payload handled by MqttResultBuilder/DpUtils.
-- Expected response: $6 creates PublishEvent/MQTT_REFRESH_DPS; $8 can create VEHICLE_MQTT_SET_DP_RESULT. Do not attribute every vehicle result to RLM1.
-- Source file/method: baseframework/utils/MqttManager.mqttCallback.messageArrived:55–81.
-- Confidence: CONFIRMED IN CODE; model-specific correlation PENDING REAL-WORLD VALIDATION.
-- HACS status: absent; polling and PUBACK only.
+HACS uses polling and broker PUBACK only. Device-level acknowledgements and live telemetry subscriptions remain future interoperability work. Subscription scope, response correlation and reconnect behavior must be validated before implementation.
 
 ## RLM2 BLE controls
 
-- Purpose: start, pause and park locally.
-- Communication/endpoint: GATT notify/write; UUIDs are listed in APK_ANALYSIS.
-- Remote method: RLM2HomeFragment.sendCmdData → BleConnectDelegate.buildRlm2NormalCmd → RLM2BluetoothUtils.sendCmdData.
-- Authentication: complete handshake/PSK reconstruction pending.
-- Known parameters: clientId and inner command. Start 000be4000400000000 (PIN replaces tail when required); pause 0009e200020000; park 0009e60002 + duration_LE16, feff for indefinite.
-- Expected response: BLE notifications/requestMap validation; not fully reconstructed.
-- Source file/method: rlm2/ui/fragment/RLM2HomeFragment.sendCmdData:1306–1375; baseframework/fastble/utils/RLM2BluetoothUtils:23–51.
-- Confidence: CONFIRMED IN CODE for these call paths; framing/security PENDING REAL-WORLD VALIDATION.
-- HACS status: absent; do not promise RLM2 cloud compatibility.
-
-## SignalR support hub
-
-- Purpose: support by CaseId, INFERRED from methods/data.
-- Communication/endpoint: SignalR/WebSocket; APPconfig.BaseSignalRAddress is https://signalr.globetools.systems:446/mowerSupport.
-- Remote methods: JoinSupportHub, LeaveSupportHub, BroadcastClientStatus, BroadcastGeneralValue, CompleteCommand.
-- Authentication: Bearer GUC passed to WebSocketHubConnectionP2.
-- Known parameters: Join/Leave use CaseId/SenderInfo; broadcasts use MessageId/Data; CompleteCommand adds SerialNumber, DeviceType=3, StatusCode, Message, Data, RequestMessageId.
-- Expected response: hub events; complete contract unknown. Distinct from MQTT acknowledgements.
-- Source file/method: baseframework/http/WebsocketBuilderV2 constructor:59–64; broadcast methods:175–196; leaveSupportHub:199–204; completeCommand:207–218; onConnected:238–243.
-- Confidence: CONFIRMED IN CODE for invocations; live transport/scope PENDING REAL-WORLD VALIDATION.
-- HACS status: absent; not established as a general telemetry channel.
+The examined Android RLM2 controls use authenticated Bluetooth. HACS does not implement this transport. Key retrieval, pairing, GATT identifiers, framing and command bytes are outside this reference. See [compatibility boundary](APK_ANALYSIS.md#rlm2-compatibility-boundary). No universal claim about RLM2 cloud compatibility follows from the examined flows.
 
 ## Datapoints parsed by HACS
 

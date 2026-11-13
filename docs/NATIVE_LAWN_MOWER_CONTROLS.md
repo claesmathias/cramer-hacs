@@ -51,13 +51,15 @@ HA IDLE means stopped but neither docked nor paused. No unambiguous Cramer code 
 
 These steps are for the user to run when ready to move the robot. No HA deployment, configuration change or restart was performed by the agent.
 
-1. In **Developer tools → States**, inspect the existing lawn_mower.cortacesped_222030193. Check availability and supported_features=7. Compare native activity with the detailed state sensor.
+The entity ID `lawn_mower.cramer_example` below is a placeholder. Replace it with your own entity ID.
+
+1. In **Developer tools → States**, inspect the existing lawn_mower.cramer_example. Check availability and supported_features=7. Compare native activity with the detailed state sensor.
 2. In **Developer tools → Actions** (Services in older versions), run the actions individually. Change action to lawn_mower.pause or lawn_mower.dock for the other checks:
 
    ```yaml
    action: lawn_mower.start_mowing
    target:
-     entity_id: lawn_mower.cortacesped_222030193
+     entity_id: lawn_mower.cramer_example
    ```
 
 3. Check actual movement and later telemetry. Pause, then dock; observe returning and docked as reported. Wait for polling rather than immediately repeating an order when telemetry is delayed.
@@ -66,7 +68,7 @@ These steps are for the user to run when ready to move the robot. No HA deployme
 
    ```yaml
    type: tile
-   entity: lawn_mower.cortacesped_222030193
+   entity: lawn_mower.cramer_example
    name: Cramer
    features:
      - type: lawn-mower-commands
