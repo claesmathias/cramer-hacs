@@ -340,15 +340,59 @@ class TestAuthenticateConsumer:
         with pytest.raises(CramerConnectAuthError):
             await client.authenticate("consumer@example.com", "wrong")
 
-    async def test_user_exist_failure_falls_back_to_consumer(self):
-        """Non-200 from user-exist should fall back to consumer path."""
+    async def test_user_exist_4xx_falls_back_to_consumer(self):
+        """A definite 4xx from user-exist selects the consumer path."""
         client = _client_with_posts(
-            _make_response(500, {}),
+            _make_response(404, {}),
             _make_response(200, XLINK_LOGIN_OK),
             _make_response(200, GUC_DIRECT_OK),
         )
         auth = await client.authenticate("consumer@example.com", "secret")
         assert auth.is_fleet_user is False
+
+    @pytest.mark.parametrize("status", [429, 500, 502, 503])
+    async def test_user_exist_outage_raises_api_error(self, status):
+        """A server outage must not be mistaken for a consumer account."""
+        client = _client_with_posts(_make_response(status, {}))
+        with pytest.raises(CramerConnectApiError) as exc:
+            await client.authenticate("fleet@example.com", "secret")
+        assert not isinstance(exc.value, CramerConnectAuthError)
+        assert client._session.post.call_count == 1  # no consumer login attempted
+
+    async def test_user_exist_network_error_raises_api_error(self):
+        import aiohttp
+        session = MagicMock()
+        session.post = MagicMock(side_effect=aiohttp.ClientConnectionError("down"))
+        with pytest.raises(CramerConnectApiError) as exc:
+            await CramerConnectClient(session).authenticate("a@b.c", "pw")
+        assert not isinstance(exc.value, CramerConnectAuthError)
+
+    async def test_user_exist_malformed_json_raises_api_error(self):
+        resp = _make_response(200, {})
+        resp.json = AsyncMock(side_effect=ValueError("not json"))
+        client = _client_with_posts(resp)
+        with pytest.raises(CramerConnectApiError):
+            await client.authenticate("a@b.c", "pw")
+
+    async def test_xlink_expiry_taken_from_login_response(self):
+        client = _client_with_posts(
+            _make_response(200, IS_FLEET_FALSE),
+            _make_response(200, {**XLINK_LOGIN_OK, "expire_in": 3000}),
+            _make_response(200, {**GUC_DIRECT_OK, "expires_in": 86400}),
+        )
+        auth = await client.authenticate("consumer@example.com", "secret")
+        assert auth.xlink_expires_in == 3000
+        assert auth.expires_in == 3000
+
+    async def test_missing_xlink_expiry_defaults_to_two_hours(self):
+        body = {k: v for k, v in XLINK_LOGIN_OK.items() if k != "expire_in"}
+        client = _client_with_posts(
+            _make_response(200, IS_FLEET_FALSE),
+            _make_response(200, body),
+            _make_response(200, GUC_DIRECT_OK),
+        )
+        auth = await client.authenticate("consumer@example.com", "secret")
+        assert auth.xlink_expires_in == 7200
 
 
 # ---------------------------------------------------------------------------
@@ -867,6 +911,7 @@ class TestCoordinatorReauth:
         coord._password = "p"
         coord.pin = None
         coord._pending_schedules = {}
+        coord._auth_lock = asyncio.Lock()
         return coord
 
     async def test_auth_error_triggers_single_reauth(self):
@@ -1105,3 +1150,89 @@ class TestPendingSchedule:
         data = {"1": self._dev(_week())}
         coord._apply_pending_schedules(data)
         assert data["1"].schedule == _week()
+
+
+# ---------------------------------------------------------------------------
+# Robustness fixes (reported in PR #4)
+# ---------------------------------------------------------------------------
+
+class TestDatapointAuthFailure:
+    async def test_device_state_401_raises_auth_error(self):
+        consumer_auth = _auth(is_fleet_user=False, fleet_token="", organization_id="",
+                              xlink_token="tok", xlink_user_id="uid")
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(401, {"error": "expired"}),
+        )
+        with pytest.raises(CramerConnectAuthError):
+            await client.get_devices(consumer_auth)
+
+    async def test_device_state_500_still_degrades_gracefully(self):
+        consumer_auth = _auth(is_fleet_user=False, fleet_token="", organization_id="",
+                              xlink_token="tok", xlink_user_id="uid")
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(500, {}),
+        )
+        devices = await client.get_devices(consumer_auth)
+        assert len(devices) == 1 and devices[0].state is None
+
+    async def test_coordinator_reauths_once_on_datapoint_401(self):
+        dev = CramerDevice("1", "p", "n", "", "", "RLM1", "4", 50, True)
+        client = MagicMock()
+        client.get_devices = AsyncMock(side_effect=[CramerConnectAuthError("401"), [dev]])
+        client.authenticate = AsyncMock(return_value=_auth(guc_token="fresh"))
+        coord = TestCoordinatorReauth()._coord(client)
+        assert await coord._async_update_data() == {"1": dev}
+        client.authenticate.assert_awaited_once()
+
+
+class TestConcurrentReauth:
+    async def test_simultaneous_reauth_logs_in_once(self):
+        gate = asyncio.Event()
+
+        async def slow_login(*_):
+            await gate.wait()
+            return _auth(guc_token="fresh")
+
+        client = MagicMock()
+        client.authenticate = AsyncMock(side_effect=slow_login)
+        coord = TestCoordinatorReauth()._coord(client)
+        first = asyncio.create_task(coord.force_reauth())
+        second = asyncio.create_task(coord.force_reauth())
+        await asyncio.sleep(0)
+        gate.set()
+        await asyncio.gather(first, second)
+        client.authenticate.assert_awaited_once()
+        assert coord.auth.guc_token == "fresh"
+
+    async def test_later_reauth_still_logs_in(self):
+        client = MagicMock()
+        client.authenticate = AsyncMock(side_effect=[_auth(guc_token="a"), _auth(guc_token="b")])
+        coord = TestCoordinatorReauth()._coord(client)
+        await coord.force_reauth()
+        await coord.force_reauth()
+        assert client.authenticate.await_count == 2
+        assert coord.auth.guc_token == "b"
+
+
+class TestScheduleBounds:
+    @pytest.mark.parametrize("timer", [
+        ScheduleTimer(24, 0, 0, False),   # inactive but invalid hour
+        ScheduleTimer(10, 60, 0, False),  # invalid minute
+        ScheduleTimer(10, 0, 1441, False),  # length beyond a day
+        ScheduleTimer(10, 0, -1, True),
+    ])
+    def test_out_of_range_values_rejected_before_packing(self, timer):
+        with pytest.raises(ValueError):
+            build_schedule_command(_week(monday=(timer, OFF_TIMER)))
+
+
+class TestDiagnosticsRedaction:
+    def test_token_like_keys_redacted_inside_datapoints(self):
+        from custom_components.cramer_connect.diagnostics import device_diagnostics
+        dp = json.dumps({"response": {"access_token": "SECRET", "nested": {"psk": "SECRET"}}})
+        dev = CramerDevice("1", "p", "n", "", "", "RLM1", "4", 50, True,
+                           datapoints={"99": {"value": dp}})
+        out = device_diagnostics(dev)
+        assert "SECRET" not in json.dumps(out, default=str)

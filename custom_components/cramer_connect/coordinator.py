@@ -1,6 +1,7 @@
 """DataUpdateCoordinator for Cramer Connect."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
@@ -49,6 +50,8 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         self.pin = pin or None
         # device_id -> (schedule written by us, monotonic expiry)
         self._pending_schedules: dict[str, tuple[Schedule, float]] = {}
+        # Serializes logins: a button press and a refresh can both need one
+        self._auth_lock = asyncio.Lock()
 
     @property
     def client(self) -> CramerConnectClient:
@@ -106,16 +109,24 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
             await self._client.send_command(self._auth, device_id, payload_hex)
 
     async def force_reauth(self) -> None:
-        """Re-authenticate unconditionally and update stored tokens."""
-        _LOGGER.debug("Forcing re-authentication")
-        try:
-            self._auth = await self._client.authenticate(
-                self._username, self._password
-            )
-        except CramerConnectAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
-        except CramerConnectApiError as err:
-            raise UpdateFailed(str(err)) from err
+        """Re-authenticate and update stored tokens.
+
+        Concurrent callers share one login: whoever waited for the lock
+        while another caller logged in reuses that fresh session.
+        """
+        stale = self._auth
+        async with self._auth_lock:
+            if self._auth is not stale:
+                return  # someone else already logged in
+            _LOGGER.debug("Re-authenticating")
+            try:
+                self._auth = await self._client.authenticate(
+                    self._username, self._password
+                )
+            except CramerConnectAuthError as err:
+                raise ConfigEntryAuthFailed(str(err)) from err
+            except CramerConnectApiError as err:
+                raise UpdateFailed(str(err)) from err
 
     async def _ensure_auth(self) -> None:
         age = (datetime.now() - self._auth.fetched_at).total_seconds()

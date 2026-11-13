@@ -14,7 +14,7 @@ A Home Assistant custom integration for **Cramer Connect** robotic lawn mowers (
 - Mower **state** sensor (`mowing`, `charging`, `parked`, ...) with the parked reason
 - **Battery**, **next start**, **last error**, statistics, GPS position, software version
 - Optional **PIN code** for mowers that need it to accept a start command
-- Automatic **token refresh** — stays connected without re-entering credentials
+- Automatic **session renewal** — signs in again when tokens expire, without asking for your credentials again
 - Polling every **30 seconds**
 - Works with all Cramer fleet accounts (same login as the Cramer Connect app)
 
@@ -24,6 +24,15 @@ A Home Assistant custom integration for **Cramer Connect** robotic lawn mowers (
 |---|---|
 | Cramer RLM1 (robotic lawn mower gen 1) | ✅ |
 | Cramer RLM2 (robotic lawn mower gen 2) | ✅ |
+
+### Tested hardware
+
+| Model | Tested by | Result |
+|---|---|---|
+| Cramer RM1500 | [@davidpicon7](https://github.com/davidpicon7) | Start mowing, pause, park until further notice and park for the rest of the day work |
+| Cramer RM1000 | maintainer | Login, live data, schedule and command-channel login work; commands not yet tried |
+
+This covers the tested robots only, not every model or firmware version. The lawn mower entity sends the same commands as the buttons. Tested another model? Please [open an issue](https://github.com/claesmathias/cramer-hacs/issues) with the results.
 
 ## Installation
 

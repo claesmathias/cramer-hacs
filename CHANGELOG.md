@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-11-13
+
+Robustness fixes found during a code review by
+[@davidpicon7](https://github.com/davidpicon7) in #4.
+
+### Fixed
+- A network error, timeout, HTTP 429 or 5xx while checking the account type
+  no longer treats a fleet account as a consumer account. Before, this failed
+  the login and asked for re-authentication although the password was fine;
+  now setup is retried later instead.
+- An expired token on the live-data call (HTTP 401) now triggers one
+  re-login. Before, it was ignored and sensors showed stale data.
+- The xlink token lifetime is taken from the login response instead of
+  always assuming 2 hours.
+- Simultaneous re-logins (for example a button press during a refresh) are
+  merged into one.
+- Every schedule timer value is range-checked before it is sent, including
+  timers that are turned off.
+- The diagnostics download redacts more token-like keys.
+
+### Documentation
+- Tested hardware: the Cramer RM1500 controls were confirmed by
+  @davidpicon7.
+
 ## [0.8.1] - 2026-11-08
 
 First stable release, ready for HACS.

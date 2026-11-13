@@ -28,6 +28,16 @@ TO_REDACT = {
     "device_authorize",
     "access_key",
     "name",
+    # Never expected in device data, redacted defensively
+    "authorize",
+    "access_token",
+    "refresh_token",
+    "token",
+    "password",
+    "psk",
+    "encryption_key",
+    "email",
+    "user_id",
 }
 
 

@@ -108,10 +108,13 @@ def parse_schedule(response: dict[str, Any]) -> Schedule | None:
 
 def validate_day_timers(timers: tuple[ScheduleTimer, ...]) -> None:
     """Apply the app's rules: within one day, end after start, no overlap."""
-    active = [t for t in timers if t.active]
-    for t in active:
+    for t in timers:
         if not (0 <= t.start_hour < 24 and 0 <= t.start_minute < 60):
             raise ValueError("Start time out of range")
+        if not 0 <= t.length_minutes <= 24 * 60:
+            raise ValueError("Timer length out of range")
+    active = [t for t in timers if t.active]
+    for t in active:
         if t.end_minutes > 24 * 60:
             raise ValueError("A timer must end before midnight")
     if len(active) == 2:
@@ -275,13 +278,14 @@ class CramerAuth:
     xlink_user_id: str = ""
     xlink_authorize: str = ""
     xlink_refresh_token: str = ""
+    xlink_expires_in: int = XLINK_TOKEN_LIFETIME_S
     fetched_at: datetime = field(default_factory=datetime.now)
 
     @property
     def expires_in(self) -> int:
         """Seconds until the first of the tokens in use expires."""
         if self.xlink_token:
-            return min(self.guc_expires_in, XLINK_TOKEN_LIFETIME_S)
+            return min(self.guc_expires_in, self.xlink_expires_in)
         return self.guc_expires_in
 
     @property
@@ -390,7 +394,9 @@ class CramerConnectClient:
                 _LOGGER.debug("Fleet XlinkToken unavailable: %s", err)
             return auth
         else:
-            xlink_token, xlink_user_id, xlink_authorize, xlink_refresh = await self._xlink_login(username, password)
+            (
+                xlink_token, xlink_user_id, xlink_authorize, xlink_refresh, xlink_expires,
+            ) = await self._xlink_login(username, password)
             guc_token, guc_refresh, guc_expires = await self._guc_direct_login(
                 username, password
             )
@@ -405,6 +411,7 @@ class CramerConnectClient:
                 xlink_user_id=xlink_user_id,
                 xlink_authorize=xlink_authorize,
                 xlink_refresh_token=xlink_refresh,
+                xlink_expires_in=xlink_expires,
             )
 
     async def refresh_guc_token(
@@ -441,17 +448,30 @@ class CramerConnectClient:
     # ------------------------------------------------------------------
 
     async def _is_fleet_user(self, username: str) -> bool:
+        """Classify the account. Only a definite answer selects the consumer path.
+
+        Network errors, timeouts, 429 and 5xx raise CramerConnectApiError so a
+        temporary outage is not mistaken for "not a fleet user" (which would
+        try a consumer login and end in a bogus re-authentication request).
+        """
         url = f"{FLEET_AUTH_URL}/api/Authorization/user-exist"
         payload = {"username": username}
         try:
             async with self._session.post(url, json=payload, headers=_base_headers()) as resp:
+                if resp.status == 429 or resp.status >= 500:
+                    raise CramerConnectApiError(
+                        f"Account classification unavailable (HTTP {resp.status})"
+                    )
                 if resp.status != 200:
                     _LOGGER.debug("user-exist returned %s, assuming non-fleet", resp.status)
                     return False
                 data = await resp.json()
-        except Exception as err:
-            _LOGGER.debug("user-exist failed (%s), assuming non-fleet", err)
-            return False
+        except CramerConnectApiError:
+            raise
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
+            raise CramerConnectApiError(f"Account classification failed: {err}") from err
+        if not isinstance(data, dict):
+            raise CramerConnectApiError("Unexpected account classification response")
         return bool(data.get("existsOnFleet", False))
 
     async def _fleet_login(self, username: str, password: str) -> tuple[str, str]:
@@ -544,8 +564,10 @@ class CramerConnectClient:
     # Consumer (non-fleet / xlink) path
     # ------------------------------------------------------------------
 
-    async def _xlink_login(self, username: str, password: str) -> tuple[str, str, str, str]:
-        """Returns (xlink_access_token, xlink_user_id, authorize, refresh_token)."""
+    async def _xlink_login(
+        self, username: str, password: str
+    ) -> tuple[str, str, str, str, int]:
+        """Returns (access_token, user_id, authorize, refresh_token, expire_in)."""
         url = f"{XLINK_URL}/v2/user_auth"
         payload = {
             "corp_id": XLINK_CORP_ID,
@@ -573,7 +595,13 @@ class CramerConnectClient:
         refresh = str(data.get("refresh_token", ""))
         if not token:
             raise CramerConnectAuthError("No access_token in xlink login response")
-        return token, user_id, authorize, refresh
+        try:
+            expires = int(data.get("expire_in") or XLINK_TOKEN_LIFETIME_S)
+        except (TypeError, ValueError):
+            expires = XLINK_TOKEN_LIFETIME_S
+        if expires <= 60:
+            expires = XLINK_TOKEN_LIFETIME_S
+        return token, user_id, authorize, refresh, expires
 
     async def _guc_direct_login(
         self, username: str, password: str
@@ -656,6 +684,11 @@ class CramerConnectClient:
             *[self._get_xlink_device_state(auth, d) for d in devices],
             return_exceptions=True,
         )
+        # An expired token affects every device: surface it so the
+        # coordinator re-authenticates instead of showing stale data.
+        for result in enrichments:
+            if isinstance(result, CramerConnectAuthError):
+                raise result
         for device, result in zip(devices, enrichments):
             if isinstance(result, Exception):
                 _LOGGER.debug("Could not fetch state for %s: %s", device.name, result)
@@ -697,6 +730,8 @@ class CramerConnectClient:
             "Xlink-User-Id": auth.xlink_user_id,
         }
         async with self._session.get(url, headers=headers) as resp:
+            if resp.status == 401:
+                raise CramerConnectAuthError("Xlink token rejected by device-state")
             if resp.status != 200:
                 return {}
             data = await resp.json()
