@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.3] - 2026-11-13
+
+Login fixes for "invalid credentials" while the Cramer Connect app logs in
+fine (#1, #3).
+
+### Fixed
+- Surrounding spaces in the e-mail address or password are removed before
+  logging in, as the app does. A pasted e-mail with a trailing space used to
+  be refused.
+- When the account login succeeds but the second login step is refused, setup
+  continues instead of reporting invalid credentials. The second step only
+  adds an extra header, and the first step already proved the password right.
+- The second login step now sends the same location flag as the app.
+- "User doesn't exist" replies (HTTP 404) used to show "cannot connect"; they
+  now show "No Cramer Connect account exists for this e-mail address".
+
+### Added
+- Specific login error messages, as in the app: password needs synchronising
+  on the Fleet Management website, account not activated, too many attempts,
+  user not found.
+- The log shows which login step was refused and the server's error code.
+  Credentials are never logged.
+
 ## [0.8.2] - 2026-11-13
 
 Robustness fixes found during a code review by

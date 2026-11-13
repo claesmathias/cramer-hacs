@@ -20,7 +20,11 @@
     "error": {
       "invalid_auth": "Invalid credentials. Please check your email and password.",
       "cannot_connect": "Cannot connect to Cramer servers. Please try again.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "password_sync_required": "Your password was changed. Log in to the Cramer Fleet Management website once to synchronise it, then try again.",
+      "not_activated": "This account is not activated yet. Confirm your e-mail address via the Cramer Connect app, then try again.",
+      "too_many_attempts": "Too many login attempts. Wait a while before trying again, or reset your password in the Cramer Connect app.",
+      "user_not_found": "No Cramer Connect account exists for this e-mail address."
     },
     "abort": {
       "already_configured": "Account is already configured.",

@@ -331,14 +331,18 @@ class TestAuthenticateConsumer:
         with pytest.raises(CramerConnectApiError):
             await client.authenticate("consumer@example.com", "secret")
 
-    async def test_guc_direct_invalid_credentials(self):
+    async def test_guc_refusal_after_xlink_success_continues(self):
+        """xlink accepted the password, so a GUC refusal is not 'invalid credentials'."""
         client = _client_with_posts(
             _make_response(200, IS_FLEET_FALSE),
             _make_response(200, XLINK_LOGIN_OK),
-            _make_response(401, {}),
+            _make_response(401, {"error": "invalid_grant"}),
         )
-        with pytest.raises(CramerConnectAuthError):
-            await client.authenticate("consumer@example.com", "wrong")
+        auth = await client.authenticate("consumer@example.com", "secret")
+        assert auth.guc_token == ""
+        assert auth.xlink_token == "xlink-token-abc"
+        assert auth.has_mqtt_credentials
+        assert auth.expires_in == 7200
 
     async def test_user_exist_4xx_falls_back_to_consumer(self):
         """A definite 4xx from user-exist selects the consumer path."""
@@ -1236,3 +1240,107 @@ class TestDiagnosticsRedaction:
                            datapoints={"99": {"value": dp}})
         out = device_diagnostics(dev)
         assert "SECRET" not in json.dumps(out, default=str)
+
+
+# ---------------------------------------------------------------------------
+# Login diagnostics (issues #1 / #3: "invalid credentials" while the app works)
+# ---------------------------------------------------------------------------
+
+from custom_components.cramer_connect.api import _error_details  # noqa: E402
+
+
+class TestLoginErrors:
+    @pytest.mark.parametrize("body,expected", [
+        ({"error": {"code": 4001001, "msg": "password error"}}, (4001001, "password error")),
+        ({"title": "Unauthorized", "status": 401, "traceId": "x"}, (401, "Unauthorized")),
+        ({"error_code": 1017, "error_message": "locked"}, (1017, "locked")),
+        ({"error": "invalid_grant", "error_description": "bad"}, (None, "bad")),
+    ])
+    def test_error_formats(self, body, expected):
+        assert _error_details(json.dumps(body)) == expected
+
+    def test_non_json_error(self):
+        assert _error_details("Bad Gateway") == (None, "Bad Gateway")
+
+    @pytest.mark.parametrize("code,status,reason", [
+        (4001001, 400, "invalid_auth"),
+        (4001007, 400, "password_sync_required"),
+        (4001008, 400, "not_activated"),
+        (4001061, 400, "too_many_attempts"),
+        (4041011, 404, "user_not_found"),  # a 404 used to show "cannot connect"
+    ])
+    async def test_xlink_error_codes_map_to_reasons(self, code, status, reason):
+        client = _client_with_posts(
+            _make_response(200, IS_FLEET_FALSE),
+            _make_response(status, {"error": {"code": code, "msg": "x"}}),
+        )
+        with pytest.raises(CramerConnectAuthError) as exc:
+            await client.authenticate("consumer@example.com", "pw")
+        assert exc.value.reason == reason
+
+    async def test_fleet_password_sync_reason(self):
+        client = _client_with_posts(
+            _make_response(200, IS_FLEET_TRUE),
+            _make_response(400, {"error": {"code": 4001007, "msg": "sync"}}),
+        )
+        with pytest.raises(CramerConnectAuthError) as exc:
+            await client.authenticate("fleet@example.com", "pw")
+        assert exc.value.reason == "password_sync_required"
+
+    async def test_unknown_5xx_is_not_an_auth_error(self):
+        client = _client_with_posts(
+            _make_response(200, IS_FLEET_FALSE),
+            _make_response(503, {"error": {"code": 5000000, "msg": "down"}}),
+        )
+        with pytest.raises(CramerConnectApiError) as exc:
+            await client.authenticate("consumer@example.com", "pw")
+        assert not isinstance(exc.value, CramerConnectAuthError)
+
+    async def test_credentials_are_trimmed(self):
+        session = MagicMock()
+        session.post = MagicMock(side_effect=[
+            _make_response(200, IS_FLEET_FALSE),
+            _make_response(200, XLINK_LOGIN_OK),
+            _make_response(200, GUC_DIRECT_OK),
+        ])
+        await CramerConnectClient(session).authenticate("  me@example.com \n", " pw ")
+        calls = session.post.call_args_list
+        assert calls[0][1]["json"] == {"username": "me@example.com"}
+        assert calls[1][1]["json"]["email"] == "me@example.com"
+        assert calls[1][1]["json"]["password"] == "pw"
+        assert calls[2][1]["data"]["username"] == "me@example.com"
+
+    async def test_guc_form_matches_app(self):
+        session = MagicMock()
+        session.post = MagicMock(side_effect=[
+            _make_response(200, IS_FLEET_FALSE),
+            _make_response(200, XLINK_LOGIN_OK),
+            _make_response(200, GUC_DIRECT_OK),
+        ])
+        await CramerConnectClient(session).authenticate("me@example.com", "pw")
+        form = session.post.call_args_list[2][1]["data"]
+        assert form["HasLocationInfo"] == "true"
+        assert form["Latitude"] == "0" and form["Longitude"] == "0"
+
+    async def test_no_empty_bearer_without_guc_token(self):
+        consumer_auth = _auth(is_fleet_user=False, fleet_token="", organization_id="",
+                              guc_token="", xlink_token="tok", xlink_user_id="uid")
+        client = _client_with_gets(
+            _make_response(200, XLINK_DEVICE_LIST_OK),
+            _make_response(200, {"datapoints": {}}),
+        )
+        await client.get_devices(consumer_auth)
+        for call in client._session.get.call_args_list:
+            assert "Authorization" not in call[1]["headers"]
+
+    async def test_password_never_logged(self, caplog):
+        import logging
+        caplog.set_level(logging.DEBUG)
+        client = _client_with_posts(
+            _make_response(200, IS_FLEET_FALSE),
+            _make_response(400, {"error": {"code": 4001001, "msg": "password error"}}),
+        )
+        with pytest.raises(CramerConnectAuthError):
+            await client.authenticate("me@example.com", "Sup3r-Secret!")
+        assert "Sup3r-Secret!" not in caplog.text
+        assert "4001001" in caplog.text

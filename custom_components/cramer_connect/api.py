@@ -298,7 +298,67 @@ class CramerConnectApiError(Exception):
 
 
 class CramerConnectAuthError(CramerConnectApiError):
-    pass
+    """Login refused. `reason` is a config-flow error key (see LOGIN_ERROR_CODES)."""
+
+    def __init__(self, message: str = "", reason: str = "invalid_auth") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+# Server error codes the app shows a specific message for (LoginActivity)
+LOGIN_ERROR_CODES = {
+    4001001: "invalid_auth",  # incorrect password
+    4001007: "password_sync_required",  # changed on the Fleet Management website
+    4001008: "not_activated",  # account e-mail not confirmed yet
+    4001061: "too_many_attempts",
+    4041011: "user_not_found",
+}
+
+
+def _error_details(text: str) -> tuple[int | None, str]:
+    """Extract (code, message) from the error formats the Cramer servers use.
+
+    xlink:  {"error": {"code": 4001001, "msg": "..."}}
+    fleet:  {"title": "...", "status": 401, "traceId": "..."}
+    GUC:    {"error_code": 1017, "error_message": "..."} or
+            OAuth {"error": "invalid_grant", "error_description": "..."}
+    """
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None, (text or "").strip()[:200]
+    if not isinstance(data, dict):
+        return None, ""
+    err = data.get("error")
+    if isinstance(err, dict):
+        code = err.get("code") or err.get("error_code")
+        msg = err.get("msg") or err.get("error_message") or ""
+    else:
+        code = data.get("error_code") or data.get("status")
+        msg = (
+            data.get("error_message") or data.get("error_description")
+            or data.get("title") or (err if isinstance(err, str) else "") or ""
+        )
+    try:
+        code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        code = None
+    return code, str(msg)[:200]
+
+
+async def _raise_for_login_error(resp: Any, step: str) -> None:
+    """Turn a failed login response into a precise exception (never logs credentials)."""
+    code, msg = _error_details(await resp.text())
+    reason = LOGIN_ERROR_CODES.get(code) if code is not None else None
+    if reason is not None or resp.status in (400, 401, 403):
+        _LOGGER.warning(
+            "%s login refused (HTTP %s, code %s): %s", step, resp.status, code, msg
+        )
+        raise CramerConnectAuthError(
+            f"{step} login refused (HTTP {resp.status}, code {code})",
+            reason=reason or "invalid_auth",
+        )
+    raise CramerConnectApiError(f"{step} login failed (HTTP {resp.status}, code {code}): {msg}")
 
 
 class CramerConnectTokenExpiredError(CramerConnectAuthError):
@@ -367,6 +427,10 @@ class CramerConnectClient:
 
     async def authenticate(self, username: str, password: str) -> CramerAuth:
         """Full login flow, branching on fleet vs. consumer account."""
+        # The app trims both fields before logging in; a pasted e-mail with a
+        # trailing space would otherwise be refused as invalid credentials.
+        username = username.strip()
+        password = password.strip()
         is_fleet = await self._is_fleet_user(username)
 
         if is_fleet:
@@ -397,9 +461,19 @@ class CramerConnectClient:
             (
                 xlink_token, xlink_user_id, xlink_authorize, xlink_refresh, xlink_expires,
             ) = await self._xlink_login(username, password)
-            guc_token, guc_refresh, guc_expires = await self._guc_direct_login(
-                username, password
-            )
+            # The xlink login proves the credentials are right. The GUC token is
+            # only an extra header on xlink calls, so a GUC refusal must not be
+            # reported as "invalid credentials".
+            try:
+                guc_token, guc_refresh, guc_expires = await self._guc_direct_login(
+                    username, password
+                )
+            except CramerConnectAuthError as err:
+                _LOGGER.warning(
+                    "GUC login refused after a successful xlink login; "
+                    "continuing without it (%s)", err,
+                )
+                guc_token, guc_refresh, guc_expires = "", "", xlink_expires
             return CramerAuth(
                 fleet_token="",
                 guc_token=guc_token,
@@ -479,15 +553,8 @@ class CramerConnectClient:
         url = f"{FLEET_API_URL}/api/Authenticate"
         payload = {"username": username, "password": password}
         async with self._session.post(url, json=payload, headers=_base_headers()) as resp:
-            if resp.status in (400, 401, 403):
-                text = await resp.text()
-                _LOGGER.warning("Fleet login rejected (HTTP %s): %s", resp.status, text)
-                raise CramerConnectAuthError(f"Fleet login rejected (HTTP {resp.status})")
             if resp.status != 200:
-                text = await resp.text()
-                raise CramerConnectApiError(
-                    f"Fleet login failed ({resp.status}): {text}"
-                )
+                await _raise_for_login_error(resp, "Fleet")
             data = await resp.json()
 
         token = data.get("access_token")
@@ -578,15 +645,8 @@ class CramerConnectClient:
             "phone_zone": None,
         }
         async with self._session.post(url, json=payload, headers=_base_headers()) as resp:
-            if resp.status in (400, 401, 403):
-                text = await resp.text()
-                _LOGGER.warning("Xlink login rejected (HTTP %s): %s", resp.status, text)
-                raise CramerConnectAuthError(f"Xlink login rejected (HTTP {resp.status})")
             if resp.status != 200:
-                text = await resp.text()
-                raise CramerConnectApiError(
-                    f"Xlink login failed ({resp.status}): {text}"
-                )
+                await _raise_for_login_error(resp, "Xlink")
             data = await resp.json()
 
         token = data.get("access_token")
@@ -615,7 +675,7 @@ class CramerConnectClient:
             "client_secret": GUC_CLIENT_SECRET,
             "username": username,
             "password": password,
-            "HasLocationInfo": "false",
+            "HasLocationInfo": "true",  # the app always sends "true" with 0,0
             "Latitude": "0",
             "Longitude": "0",
             "LoginTime": str(int(time.time())),
@@ -630,15 +690,8 @@ class CramerConnectClient:
         }
         try:
             async with self._session.post(url, data=form, headers=headers) as resp:
-                if resp.status in (400, 401, 403):
-                    text = await resp.text()
-                    _LOGGER.warning("GUC direct login rejected (HTTP %s): %s", resp.status, text)
-                    raise CramerConnectAuthError(f"GUC login rejected (HTTP {resp.status})")
                 if resp.status != 200:
-                    text = await resp.text()
-                    raise CramerConnectApiError(
-                        f"GUC direct login failed ({resp.status}): {text}"
-                    )
+                    await _raise_for_login_error(resp, "GUC")
                 data = await resp.json()
         except CramerConnectApiError:
             raise
@@ -657,7 +710,7 @@ class CramerConnectClient:
         url = f"{XLINK_URL}/v2/user/{auth.xlink_user_id}/subscribe/devices"
         headers = {
             **_base_headers(),
-            "Authorization": f"Bearer {auth.guc_token}",
+            **({"Authorization": f"Bearer {auth.guc_token}"} if auth.guc_token else {}),
             "Access-Token": auth.xlink_token,
             "Xlink-Access-Token": auth.xlink_token,
             "Xlink-User-Id": auth.xlink_user_id,
@@ -724,7 +777,7 @@ class CramerConnectClient:
         url = f"{XLINK_URL}/v2/product/{product_id}/device-state/{device_id}"
         headers = {
             **_base_headers(),
-            "Authorization": f"Bearer {auth.guc_token}",
+            **({"Authorization": f"Bearer {auth.guc_token}"} if auth.guc_token else {}),
             "Access-Token": auth.xlink_token,
             "Xlink-Access-Token": auth.xlink_token,
             "Xlink-User-Id": auth.xlink_user_id,

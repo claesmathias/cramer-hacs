@@ -14,10 +14,19 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import CramerAuth, CramerConnectAuthError, CramerConnectApiError, CramerConnectClient
+from .api import (
+    LOGIN_ERROR_CODES,
+    CramerAuth,
+    CramerConnectAuthError,
+    CramerConnectApiError,
+    CramerConnectClient,
+)
 from .const import CONF_ORGANIZATION_ID, CONF_PIN, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+# Error keys with their own message in strings.json
+LOGIN_ERRORS = set(LOGIN_ERROR_CODES.values())
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -40,7 +49,7 @@ class CramerConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await client.authenticate(username, password)
         except CramerConnectAuthError as err:
             _LOGGER.error("Authentication failed: %s", err)
-            errors["base"] = "invalid_auth"
+            errors["base"] = err.reason if err.reason in LOGIN_ERRORS else "invalid_auth"
         except (CramerConnectApiError, aiohttp.ClientError) as err:
             _LOGGER.error("Cannot connect to Cramer API: %s", err)
             errors["base"] = "cannot_connect"
@@ -55,17 +64,18 @@ class CramerConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            auth = await self._async_try_login(
-                user_input[CONF_USERNAME], user_input[CONF_PASSWORD], errors
-            )
+            # Same as the app: surrounding whitespace is not part of the login
+            username = user_input[CONF_USERNAME].strip()
+            password = user_input[CONF_PASSWORD].strip()
+            auth = await self._async_try_login(username, password, errors)
             if auth is not None:
-                await self.async_set_unique_id(user_input[CONF_USERNAME].lower())
+                await self.async_set_unique_id(username.lower())
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=user_input[CONF_USERNAME],
+                    title=username,
                     data={
-                        CONF_USERNAME: user_input[CONF_USERNAME],
-                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        CONF_USERNAME: username,
+                        CONF_PASSWORD: password,
                         CONF_ORGANIZATION_ID: auth.organization_id,
                     },
                 )
@@ -91,13 +101,12 @@ class CramerConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         username = entry.data[CONF_USERNAME]
 
         if user_input is not None:
-            auth = await self._async_try_login(
-                username, user_input[CONF_PASSWORD], errors
-            )
+            password = user_input[CONF_PASSWORD].strip()
+            auth = await self._async_try_login(username, password, errors)
             if auth is not None:
                 self.hass.config_entries.async_update_entry(
                     entry,
-                    data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]},
+                    data={**entry.data, CONF_PASSWORD: password},
                 )
                 await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reauth_successful")
