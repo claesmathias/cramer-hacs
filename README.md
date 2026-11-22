@@ -165,6 +165,11 @@ automation:
 
 ## Troubleshooting
 
+**"Cannot reach the Cramer Connect servers" under Settings → System → Repairs**
+Home Assistant couldn't reach the Cramer servers for 15 minutes. Check Home Assistant's internet connection; otherwise the Cramer servers may be down. The message disappears automatically once they respond again.
+
+A mower that is switched off or out of range (for example stored for the winter) doesn't create a message; the **Online** and **Status** sensors show it instead. If the password stops working, Home Assistant asks you to sign in again under **Settings → Devices & services**.
+
 **Integration shows unavailable after a while**
 The mower reports offline when it loses the cloud connection (e.g. out of WiFi range). This is expected — the state will recover once the mower reconnects.
 

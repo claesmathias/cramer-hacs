@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4] - 2026-11-22
+
+### Added
+- A repair message under **Settings → System → Repairs** when Home Assistant
+  can't reach the Cramer servers for 15 minutes. It clears automatically once
+  they respond again. An offline mower (for example stored for the winter)
+  deliberately doesn't create a message.
+
 ## [0.8.3] - 2026-11-13
 
 Login fixes for "invalid credentials" while the Cramer Connect app logs in

@@ -103,6 +103,8 @@ _util_dt = _module("homeassistant.util.dt")
 from datetime import datetime as _datetime
 _util_dt.now = lambda: _datetime.now().astimezone()
 _util_dt.as_local = lambda d: d.astimezone()
+from datetime import timezone as _tz
+_util_dt.utcnow = lambda: _datetime.now(_tz.utc)
 from zoneinfo import ZoneInfo as _ZoneInfo
 _util_dt.get_default_time_zone = lambda: _ZoneInfo("Europe/Brussels")
 _util.dt = _util_dt
@@ -130,6 +132,12 @@ _ep = _module("homeassistant.helpers.entity_platform")
 _ep.AddEntitiesCallback = None
 _ep.async_get_current_platform = MagicMock()
 _helpers.entity_platform = _ep
+
+_ir = _module("homeassistant.helpers.issue_registry")
+_ir.async_create_issue = MagicMock()
+_ir.async_delete_issue = MagicMock()
+_ir.IssueSeverity = type("IssueSeverity", (), {"WARNING": "warning", "ERROR": "error"})
+_helpers.issue_registry = _ir
 
 _er = _module("homeassistant.helpers.entity_registry")
 _er.async_get = MagicMock()

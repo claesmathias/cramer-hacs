@@ -20,6 +20,7 @@ from .api import (
     Schedule,
 )
 from .const import DOMAIN, SCAN_INTERVAL_SECONDS
+from .issues import ConnectionIssues
 
 # How long a just-written schedule wins over the (possibly stale) cloud copy
 PENDING_SCHEDULE_TTL_S = 120
@@ -36,6 +37,7 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         username: str,
         password: str,
         pin: str | None = None,
+        entry_id: str = "",
     ) -> None:
         super().__init__(
             hass,
@@ -52,6 +54,8 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         self._pending_schedules: dict[str, tuple[Schedule, float]] = {}
         # Serializes logins: a button press and a refresh can both need one
         self._auth_lock = asyncio.Lock()
+        # Repair issues for lost connections (Settings → System → Repairs)
+        self.issues = ConnectionIssues(hass, entry_id)
 
     @property
     def client(self) -> CramerConnectClient:
@@ -62,6 +66,16 @@ class CramerConnectCoordinator(DataUpdateCoordinator[dict[str, CramerDevice]]):
         return self._auth
 
     async def _async_update_data(self) -> dict[str, CramerDevice]:
+        try:
+            data = await self._async_fetch()
+        except UpdateFailed as err:
+            # Cramer servers unreachable: show a repair after the grace period
+            self.issues.cloud_failed(str(err))
+            raise
+        self.issues.cloud_ok()
+        return data
+
+    async def _async_fetch(self) -> dict[str, CramerDevice]:
         await self._ensure_auth()
         try:
             devices = await self._client.get_devices(self._auth)

@@ -916,6 +916,7 @@ class TestCoordinatorReauth:
         coord.pin = None
         coord._pending_schedules = {}
         coord._auth_lock = asyncio.Lock()
+        coord.issues = MagicMock()
         return coord
 
     async def test_auth_error_triggers_single_reauth(self):

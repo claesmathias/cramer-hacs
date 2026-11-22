@@ -43,7 +43,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryNotReady(str(err)) from err
 
     coordinator = CramerConnectCoordinator(
-        hass, client, auth, username, password, pin=entry.options.get(CONF_PIN)
+        hass, client, auth, username, password,
+        pin=entry.options.get(CONF_PIN), entry_id=entry.entry_id,
     )
     await coordinator.async_config_entry_first_refresh()
 
@@ -76,5 +77,6 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
+        coordinator: CramerConnectCoordinator = hass.data[DOMAIN].pop(entry.entry_id)
+        coordinator.issues.clear_all()
     return unload_ok

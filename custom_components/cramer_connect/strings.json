@@ -220,5 +220,11 @@
         "sunday": "Sunday"
       }
     }
+  },
+  "issues": {
+    "cloud_unreachable": {
+      "title": "Cannot reach the Cramer Connect servers",
+      "description": "Home Assistant has not been able to reach the Cramer Connect servers since {since}. The mower entities stay unavailable until the connection is back.\n\nLast error: {error}\n\nCheck Home Assistant's internet connection. If it is fine, the Cramer servers may be down; this message disappears automatically when they respond again."
+    }
   }
 }
